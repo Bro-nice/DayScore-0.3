@@ -744,7 +744,11 @@ export default function App() {
   if (!currentUser) {
     // Elegant Duolingo-styled Sign-In Screen
     return (
-      <div className="flex min-h-screen flex-col items-center justify-center bg-slate-50 dark:bg-slate-950 px-4 transition-colors">
+      <div className="flex min-h-screen flex-col items-center justify-center bg-slate-50 dark:bg-slate-950 px-4 transition-colors relative">
+        {/* Handwriting Watermark */}
+        <div className="absolute top-4 right-6 font-handwriting text-lg md:text-xl text-violet-600/70 dark:text-violet-400/70 select-none pointer-events-none z-50">
+          made by- Aarogya Parajuli
+        </div>
         <div className="w-full max-w-md text-center">
           <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-2xl bg-indigo-600 text-white shadow-xl shadow-indigo-100 dark:shadow-none mb-6 animate-bounce">
             <Sparkles className="w-9 h-9" />
@@ -792,6 +796,11 @@ export default function App() {
 
   return (
     <div className="flex h-screen bg-gradient-to-tr from-[#f5f3ff] via-[#faf5ff] to-[#fff1f2] dark:bg-gradient-to-tr dark:from-[#090514] dark:via-[#02010a] dark:to-[#0f0410] text-slate-900 dark:text-white transition-colors overflow-hidden font-sans relative">
+      {/* Handwriting Watermark */}
+      <div className="absolute top-4 right-6 font-handwriting text-lg md:text-xl text-violet-600/70 dark:text-violet-400/70 select-none pointer-events-none z-[45]">
+        made by- Aarogya Parajuli
+      </div>
+
       {/* Vibrant Ambient Orbs */}
       <div className="absolute top-[-10%] left-[-5%] w-[45%] h-[45%] bg-gradient-to-br from-violet-400/20 to-fuchsia-400/10 rounded-full blur-[100px] pointer-events-none" />
       <div className="absolute bottom-[-10%] right-[-5%] w-[45%] h-[45%] bg-gradient-to-br from-rose-400/20 to-amber-400/10 rounded-full blur-[100px] pointer-events-none" />
