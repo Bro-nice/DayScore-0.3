@@ -2,9 +2,10 @@ import { JournalEntry } from '../types';
 
 interface ContributionGraphProps {
   journals: JournalEntry[];
+  onCellClick?: (evaluation: any) => void;
 }
 
-export default function ContributionGraph({ journals }: ContributionGraphProps) {
+export default function ContributionGraph({ journals, onCellClick }: ContributionGraphProps) {
   // Generate the last 105 days sorted chronologically
   const daysCount = 105;
   const dates = Array.from({ length: daysCount }).map((_, i) => {
@@ -49,9 +50,11 @@ export default function ContributionGraph({ journals }: ContributionGraphProps) 
       </div>
 
       {/* Grid rendering (7 rows for Sunday-Saturday, 15 columns) */}
-      <div className="grid grid-flow-col grid-rows-7 gap-1 overflow-x-auto py-1">
+      <div className="grid grid-flow-col gap-1 overflow-x-auto py-1" style={{ gridTemplateRows: 'repeat(7, minmax(0, 1fr))' }}>
         {dates.map(dateStr => {
           const score = scoreMap.get(dateStr);
+          const entry = journals.find(j => j.date === dateStr);
+          const hasEvaluation = entry && entry.evaluation;
           const formattedDate = new Date(dateStr).toLocaleDateString('en-US', {
             month: 'short',
             day: 'numeric',
@@ -61,7 +64,14 @@ export default function ContributionGraph({ journals }: ContributionGraphProps) 
           return (
             <div
               key={dateStr}
-              className={`w-3 h-3 rounded-sm border transition-all duration-200 hover:scale-125 cursor-pointer relative group ${getShadeClass(dateStr)}`}
+              onClick={() => {
+                if (hasEvaluation && onCellClick) {
+                  onCellClick(entry.evaluation);
+                }
+              }}
+              className={`w-3 h-3 rounded-sm border transition-all duration-200 hover:scale-125 relative group ${getShadeClass(dateStr)} ${
+                hasEvaluation ? 'cursor-pointer hover:border-violet-500' : 'cursor-default'
+              }`}
             >
               {/* Tooltip */}
               <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 hidden group-hover:block z-20 bg-slate-800 text-white text-[10px] py-1 px-2 rounded shadow whitespace-nowrap">

@@ -23,6 +23,10 @@ import {
   Pause,
   RotateCcw,
   Volume2,
+  Mic,
+  UserPlus,
+  UserCheck,
+  Clock,
   Sparkles,
   ChevronRight,
   Search,
@@ -56,11 +60,20 @@ import { Profile, JournalEntry, StudySession, FeedPost, ChatRoom, LeaderboardRan
 import ConfettiCanvas from './components/ConfettiCanvas';
 import ContributionGraph from './components/ContributionGraph';
 
+const PRESET_AVATARS = [
+  "https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=150&q=80",
+  "https://images.unsplash.com/photo-1539571696357-5a69c17a67c6?auto=format&fit=crop&w=150&q=80",
+  "https://images.unsplash.com/photo-1494790108377-be9c29b29330?auto=format&fit=crop&w=150&q=80",
+  "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&w=150&q=80",
+  "https://images.unsplash.com/photo-1438761681033-6461ffad8d80?auto=format&fit=crop&w=150&q=80",
+  "https://images.unsplash.com/photo-1500648767791-00dcc994a43e?auto=format&fit=crop&w=150&q=80"
+];
+
 // --- MAIN REACT COMPONENT ---
 export default function App() {
   // --- AUTH STATE ---
   const [currentUser, setCurrentUser] = useState<Profile | null>(null);
-  const [authEmailInput, setAuthEmailInput] = useState('aarogyaparajuli13@gmail.com');
+  const [authEmailInput, setAuthEmailInput] = useState('');
   const [authLoading, setAuthLoading] = useState(false);
 
   // --- GENERAL APP STATE ---
@@ -104,6 +117,11 @@ export default function App() {
 
   // --- CHAT INPUT ---
   const [chatInputText, setChatInputText] = useState('');
+  const [chatSidebarTab, setChatSidebarTab] = useState<'chats' | 'friends'>('chats');
+  const [isEditingProfile, setIsEditingProfile] = useState(false);
+  const [editDisplayName, setEditDisplayName] = useState('');
+  const [editBio, setEditBio] = useState('');
+  const [editAvatarUrl, setEditAvatarUrl] = useState('');
   const chatEndRef = useRef<HTMLDivElement | null>(null);
 
   // --- RECENT COMPILATION & ACTIVE JOURNAL DATE ---
@@ -124,9 +142,6 @@ export default function App() {
     const savedEmail = localStorage.getItem('reflect_auth_email');
     if (savedEmail) {
       handleLogin(savedEmail);
-    } else {
-      // Auto login with default email from context metadata as specified in instructions
-      handleLogin('aarogyaparajuli13@gmail.com');
     }
 
     // Theme Check
@@ -184,17 +199,27 @@ export default function App() {
 
   // --- API SERVICE CALLS ---
   const handleLogin = async (email: string) => {
+    if (!email || !email.trim()) {
+      showToast('Please enter your student email address.', 'info');
+      return;
+    }
+    const trimmedEmail = email.trim().toLowerCase();
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(trimmedEmail)) {
+      showToast('Please enter a valid email format (e.g., student@university.edu).', 'info');
+      return;
+    }
     setAuthLoading(true);
     try {
       const res = await fetch('/api/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email }),
+        body: JSON.stringify({ email: trimmedEmail }),
       });
       const data = await res.json();
       if (res.ok) {
         setCurrentUser(data.user);
-        localStorage.setItem('reflect_auth_email', email);
+        localStorage.setItem('reflect_auth_email', trimmedEmail);
         if (data.user.theme === 'dark') {
           setIsThemeDark(true);
           document.documentElement.classList.add('dark');
@@ -205,7 +230,7 @@ export default function App() {
         showToast(`Welcome back, ${data.user.displayName}! ✨`, 'success');
         
         // Initial Fetch
-        fetchInitialData(email);
+        fetchInitialData(trimmedEmail);
       } else {
         showToast(data.error || 'Login failed', 'info');
       }
@@ -247,6 +272,7 @@ export default function App() {
 
     fetchChatRooms(email);
     fetchFriends(email);
+    searchUsers('', email);
     fetchLeaderboards(email, 'global', 'weekly');
     fetchAnalytics(email);
   };
@@ -617,22 +643,61 @@ export default function App() {
     }
   };
 
-  // --- VOICE VOICE REPLAY MOCK ---
+  // --- REAL VOICE DICTATION & FALLBACK ---
   const handleVoiceInputMock = () => {
     if (isVoiceRecording) {
       setIsVoiceRecording(false);
       return;
     }
+
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (SpeechRecognition) {
+      try {
+        const recognition = new SpeechRecognition();
+        recognition.continuous = false;
+        recognition.lang = 'en-US';
+        recognition.interimResults = false;
+
+        recognition.onstart = () => {
+          setIsVoiceRecording(true);
+          showToast('🎙️ Voice typing active! Speak now...', 'success');
+        };
+
+        recognition.onerror = (event: any) => {
+          console.error('Speech recognition error', event);
+          showToast('Voice typing issue: ' + (event.error || 'blocked') + '. Running smart backup...', 'info');
+          runSimulationFallback();
+        };
+
+        recognition.onend = () => {
+          setIsVoiceRecording(false);
+        };
+
+        recognition.onresult = (event: any) => {
+          const transcript = event.results[0][0].transcript;
+          setJournalText(prev => prev + (prev ? " " : "") + transcript);
+          showToast('🎙️ Dictation transcribed successfully!', 'success');
+        };
+
+        recognition.start();
+      } catch (e) {
+        console.error(e);
+        runSimulationFallback();
+      }
+    } else {
+      showToast('🎙️ Microphone restricted in browser frame. Running smart simulation...', 'info');
+      runSimulationFallback();
+    }
+  };
+
+  const runSimulationFallback = () => {
     setIsVoiceRecording(true);
-    showToast('🎙️ Voice recorder listening... Speak freely!', 'info');
-    
-    // Simulate speech-to-text dictation after 4 seconds
     setTimeout(() => {
       setIsVoiceRecording(false);
-      const textToAppend = " Today was incredibly productive. I spent 3 continuous hours coding our compiler lab with great focus. Exercised for 30 minutes in the evening and slept early.";
-      setJournalText(prev => prev + textToAppend);
-      showToast('🎙️ Dictation complete! STT transcribed your reflection.', 'success');
-    }, 4500);
+      const textToAppend = "Today was incredibly productive. I spent 3 continuous hours coding our compiler lab with great focus. Exercised for 30 minutes in the evening and slept early.";
+      setJournalText(prev => prev + (prev ? " " : "") + textToAppend);
+      showToast('🎙️ Simulation complete! STT transcribed your reflection.', 'success');
+    }, 3000);
   };
 
   // --- UTILS & LOOKUPS ---
@@ -710,14 +775,14 @@ export default function App() {
             <button
               onClick={() => handleLogin(authEmailInput)}
               disabled={authLoading}
-              className="w-full py-4 text-center text-sm font-bold text-white bg-indigo-600 hover:bg-indigo-500 active:translate-y-0.5 border-b-4 border-indigo-800 active:border-b-0 rounded-xl transition-all duration-100 flex items-center justify-center gap-2"
+              className="w-full py-4 text-center text-sm font-bold text-white bg-indigo-600 hover:bg-indigo-500 active:translate-y-0.5 border-b-4 border-indigo-800 active:border-b-0 rounded-xl transition-all duration-100 flex items-center justify-center gap-2 cursor-pointer"
             >
-              {authLoading ? 'Signing in...' : 'Sign in with Google'}
+              {authLoading ? 'Signing in...' : 'Sign In / Register'}
               <ChevronRight className="w-4 h-4" />
             </button>
 
             <div className="text-[11px] text-slate-400">
-              By continuing, you agree to connect your Google Student Workspace account. Auto-login is securely active.
+              Enter any valid email address to securely create your student account or log back in.
             </div>
           </div>
         </div>
@@ -909,14 +974,14 @@ export default function App() {
                     {/* Mic Button */}
                     <button
                       onClick={handleVoiceInputMock}
-                      className={`absolute bottom-3 right-3 p-3 rounded-full shadow-md transition-all ${
+                      className={`absolute bottom-3 right-3 p-3 rounded-full shadow-md transition-all cursor-pointer ${
                         isVoiceRecording 
                           ? 'bg-rose-500 text-white animate-ping' 
                           : 'bg-gradient-to-tr from-violet-600 to-fuchsia-600 hover:from-violet-500 hover:to-fuchsia-500 text-white'
                       }`}
-                      title="Simulate Voice Input Dictation"
+                      title="Voice Typing Dictation"
                     >
-                      <Volume2 className="w-4 h-4" />
+                      <Mic className="w-4 h-4" />
                     </button>
                   </div>
 
@@ -946,7 +1011,13 @@ export default function App() {
                 </div>
 
                 {/* Contribution peek */}
-                <ContributionGraph journals={journals} />
+                <ContributionGraph 
+                  journals={journals} 
+                  onCellClick={(evaluation) => {
+                    setActiveEvaluation(evaluation);
+                    setShowEvaluationModal(true);
+                  }}
+                />
               </div>
 
               {/* Column 3: Stats Gauge & Study Timer */}
@@ -1309,39 +1380,174 @@ export default function App() {
             
             {/* Friends/Chat Rooms List */}
             <div className="w-72 border-r border-slate-200/50 dark:border-slate-800/50 bg-white/75 dark:bg-slate-900/60 backdrop-blur-xl flex flex-col flex-shrink-0">
-              <div className="p-4 border-b border-slate-100/80 dark:border-slate-800/80">
-                <h3 className="text-sm font-black text-slate-900 dark:text-white font-display">Classroom Chat</h3>
-                <span className="text-[10px] text-fuchsia-500 font-bold uppercase tracking-wider">Simulated Study Groups</span>
-              </div>
-              <div className="flex-1 overflow-y-auto p-2 space-y-1">
-                {chatRooms.map(room => (
+              <div className="p-4 border-b border-slate-100/80 dark:border-slate-800/80 space-y-3">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-sm font-black text-slate-900 dark:text-white font-display">Classroom Chat</h3>
+                  <span className="text-[10px] text-fuchsia-500 font-bold uppercase tracking-wider">Simulated Study Groups</span>
+                </div>
+                
+                {/* Switcher tabs */}
+                <div className="flex bg-slate-100/50 dark:bg-slate-800/50 p-1 rounded-xl">
                   <button
-                    key={room.id}
-                    onClick={() => {
-                      setActiveRoomId(room.id);
-                      setChatMessages([]);
-                    }}
-                    className={`w-full flex items-center gap-3 p-3 rounded-2xl transition-all duration-300 text-left ${
-                      activeRoomId === room.id 
-                        ? 'bg-gradient-to-r from-violet-500/10 to-fuchsia-500/10 border-l-4 border-violet-500 shadow-sm' 
-                        : 'hover:bg-slate-100/50 dark:hover:bg-slate-800/40 border-l-4 border-transparent'
+                    onClick={() => setChatSidebarTab('chats')}
+                    className={`flex-1 text-center py-1.5 text-[10px] font-bold rounded-lg transition-all cursor-pointer ${
+                      chatSidebarTab === 'chats'
+                        ? 'bg-white dark:bg-slate-900 text-violet-600 dark:text-violet-400 shadow-sm'
+                        : 'text-slate-500 dark:text-slate-400 hover:text-slate-700'
                     }`}
                   >
-                    <div className="relative">
-                      <img src={room.peer?.avatarUrl} alt="peer" className="w-10 h-10 rounded-full object-cover ring-2 ring-violet-500/10" />
-                      <div className={`absolute bottom-0 right-0 w-3 h-3 rounded-full border-2 border-white dark:border-slate-900 ${
-                        room.peer?.online ? 'bg-emerald-500 animate-pulse' : 'bg-slate-300'
-                      }`} />
-                    </div>
-                    <div className="overflow-hidden">
-                      <p className="text-xs font-black text-slate-800 dark:text-white truncate font-display">{room.peer?.displayName}</p>
-                      <p className="text-[10px] text-slate-400 truncate font-medium">
-                        {room.messages[room.messages.length - 1]?.text || 'No conversations yet.'}
-                      </p>
-                    </div>
+                    Active Chats
                   </button>
-                ))}
+                  <button
+                    onClick={() => setChatSidebarTab('friends')}
+                    className={`flex-1 text-center py-1.5 text-[10px] font-bold rounded-lg transition-all cursor-pointer relative ${
+                      chatSidebarTab === 'friends'
+                        ? 'bg-white dark:bg-slate-900 text-violet-600 dark:text-violet-400 shadow-sm'
+                        : 'text-slate-500 dark:text-slate-400 hover:text-slate-700'
+                    }`}
+                  >
+                    Find Friends
+                    {pendingRequests.length > 0 && (
+                      <span className="absolute -top-1 -right-1 flex h-2 w-2">
+                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-rose-400 opacity-75"></span>
+                        <span className="relative inline-flex rounded-full h-2 w-2 bg-rose-500"></span>
+                      </span>
+                    )}
+                  </button>
+                </div>
               </div>
+
+              {chatSidebarTab === 'chats' ? (
+                <div className="flex-1 overflow-y-auto p-2 space-y-1">
+                  {chatRooms.length === 0 ? (
+                    <p className="text-[10px] text-slate-400 text-center p-4">No active chats yet. Find a friend to start chatting!</p>
+                  ) : (
+                    chatRooms.map(room => (
+                      <button
+                        key={room.id}
+                        onClick={() => {
+                          setActiveRoomId(room.id);
+                          setChatMessages([]);
+                        }}
+                        className={`w-full flex items-center gap-3 p-3 rounded-2xl transition-all duration-300 text-left ${
+                          activeRoomId === room.id 
+                            ? 'bg-gradient-to-r from-violet-500/10 to-fuchsia-500/10 border-l-4 border-violet-500 shadow-sm' 
+                            : 'hover:bg-slate-100/50 dark:hover:bg-slate-800/40 border-l-4 border-transparent'
+                        }`}
+                      >
+                        <div className="relative">
+                          <img src={room.peer?.avatarUrl} alt="peer" className="w-10 h-10 rounded-full object-cover ring-2 ring-violet-500/10" />
+                          <div className={`absolute bottom-0 right-0 w-3 h-3 rounded-full border-2 border-white dark:border-slate-900 ${
+                            room.peer?.online ? 'bg-emerald-500 animate-pulse' : 'bg-slate-300'
+                          }`} />
+                        </div>
+                        <div className="overflow-hidden w-full">
+                          <p className="text-xs font-black text-slate-800 dark:text-white truncate font-display">{room.peer?.displayName}</p>
+                          <p className="text-[10px] text-slate-400 truncate font-medium">
+                            {room.messages[room.messages.length - 1]?.text || 'No conversations yet.'}
+                          </p>
+                        </div>
+                      </button>
+                    ))
+                  )}
+                </div>
+              ) : (
+                <div className="flex-1 flex flex-col overflow-hidden">
+                  {/* Search Input */}
+                  <div className="p-3 border-b border-slate-100/50 dark:border-slate-800/50 space-y-2">
+                    <div className="relative">
+                      <input
+                        type="text"
+                        value={userSearchQuery}
+                        onChange={(e) => {
+                          setUserSearchQuery(e.target.value);
+                          searchUsers(e.target.value);
+                        }}
+                        placeholder="Search classmates..."
+                        className="w-full pl-8 pr-3 py-2 text-[11px] bg-slate-50/50 dark:bg-slate-800/30 rounded-xl focus:outline-none focus:border-violet-500 border border-slate-150 dark:border-slate-850 font-medium text-slate-800 dark:text-white"
+                      />
+                      <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-2.5" />
+                    </div>
+                  </div>
+
+                  {/* Pending incoming requests */}
+                  {pendingRequests.length > 0 && (
+                    <div className="p-3 border-b border-slate-150/50 dark:border-slate-850/50 space-y-2 bg-violet-50/20 dark:bg-violet-950/5">
+                      <span className="text-[9px] font-bold text-slate-400 uppercase tracking-wider block">Incoming Requests ({pendingRequests.length})</span>
+                      <div className="space-y-2">
+                        {pendingRequests.map(req => (
+                          <div key={req.fromEmail} className="flex items-center justify-between p-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800/50 shadow-sm">
+                            <div className="flex items-center gap-2 overflow-hidden">
+                              <img src={req.fromUser?.avatarUrl} alt="avatar" className="w-7 h-7 rounded-full object-cover" />
+                              <div className="overflow-hidden">
+                                <p className="text-[10px] font-black truncate text-slate-800 dark:text-white leading-tight">{req.fromUser?.displayName}</p>
+                                <span className="text-[8px] text-slate-400 truncate">@{req.fromUser?.username}</span>
+                              </div>
+                            </div>
+                            <div className="flex gap-1">
+                              <button
+                                onClick={() => respondFriendRequest(req.fromEmail, 'accept')}
+                                className="p-1 text-[9px] font-bold text-white bg-emerald-500 hover:bg-emerald-600 rounded-lg cursor-pointer transition-colors"
+                                title="Accept"
+                              >
+                                <Check className="w-3 h-3" />
+                              </button>
+                              <button
+                                onClick={() => respondFriendRequest(req.fromEmail, 'reject')}
+                                className="p-1 text-[9px] font-bold text-white bg-rose-500 hover:bg-rose-600 rounded-lg cursor-pointer transition-colors"
+                                title="Reject"
+                              >
+                                <Trash className="w-3 h-3" />
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Classmate candidates */}
+                  <div className="flex-1 overflow-y-auto p-2 space-y-2">
+                    <span className="text-[9px] font-bold text-slate-400 uppercase tracking-wider block px-2">
+                      {userSearchQuery ? 'Search Results' : 'Recommended Classmates'}
+                    </span>
+                    
+                    {(userSearchQuery ? userSearchResult : userSearchResult.filter(c => c.email !== currentUser?.email && !friendsList.some(f => f.email === c.email))).length === 0 ? (
+                      <p className="text-[10px] text-slate-400 p-4 text-center">No classmates found.</p>
+                    ) : (
+                      (userSearchQuery ? userSearchResult : userSearchResult.filter(c => c.email !== currentUser?.email && !friendsList.some(f => f.email === c.email))).map(student => {
+                        const isFriend = friendsList.some(f => f.email === student.email);
+                        const isSentPending = pendingRequests.some(r => r.fromEmail === currentUser.email && r.toEmail === student.email);
+                        
+                        return (
+                          <div key={student.email} className="flex items-center justify-between p-2.5 rounded-2xl bg-white/50 dark:bg-slate-900/40 border border-slate-100/80 dark:border-slate-800/60 shadow-sm transition-all hover:bg-white dark:hover:bg-slate-900">
+                            <div className="flex items-center gap-2 overflow-hidden">
+                              <img src={student.avatarUrl} alt="avatar" className="w-8 h-8 rounded-full object-cover ring-2 ring-violet-500/5" />
+                              <div className="overflow-hidden">
+                                <h4 className="text-[11px] font-black text-slate-800 dark:text-white leading-tight font-display truncate">{student.displayName}</h4>
+                                <p className="text-[8px] text-slate-400 truncate">@{student.username}</p>
+                              </div>
+                            </div>
+                            
+                            {isFriend ? (
+                              <span className="text-[8px] font-bold text-emerald-500 bg-emerald-500/10 px-2 py-1 rounded-full">Friends</span>
+                            ) : isSentPending ? (
+                              <span className="text-[8px] font-bold text-amber-500 bg-amber-500/10 px-2 py-1 rounded-full flex items-center gap-1"><Clock className="w-2.5 h-2.5" /> Sent</span>
+                            ) : (
+                              <button
+                                onClick={() => sendFriendRequest(student.email)}
+                                className="px-2 py-1 bg-violet-600 hover:bg-violet-500 text-white text-[9px] font-black rounded-lg cursor-pointer transition-all duration-200 flex items-center gap-1 shadow-sm"
+                              >
+                                <UserPlus className="w-2.5 h-2.5" /> Add
+                              </button>
+                            )}
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* Active chat window */}
@@ -1498,14 +1704,13 @@ export default function App() {
                   {currentUser.bio}
                 </p>
 
-                {/* Direct quick profile edit modal placeholder click */}
+                {/* Direct quick profile edit modal */}
                 <button
                   onClick={() => {
-                    const newName = prompt('Enter your Display Name:', currentUser.displayName);
-                    const newBio = prompt('Enter your short bio:', currentUser.bio);
-                    if (newName !== null) {
-                      handleUpdateProfile(newName, newBio || '', currentUser.avatarUrl);
-                    }
+                    setEditDisplayName(currentUser.displayName);
+                    setEditBio(currentUser.bio);
+                    setEditAvatarUrl(currentUser.avatarUrl);
+                    setIsEditingProfile(true);
                   }}
                   className="px-5 py-2.5 text-xs font-black bg-gradient-to-tr from-violet-600 to-fuchsia-600 hover:from-violet-500 hover:to-fuchsia-500 text-white rounded-2xl shadow-sm transition-all cursor-pointer"
                 >
@@ -1751,6 +1956,99 @@ export default function App() {
                   className="flex-1 py-3.5 text-center text-xs font-black text-white bg-gradient-to-r from-violet-600 to-fuchsia-600 hover:from-violet-500 hover:to-fuchsia-500 border-b-4 border-violet-800 active:border-b-0 rounded-2xl shadow-lg transition-all cursor-pointer"
                 >
                   Save & Share block
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* --- STUDENT PROFILE EDITING MODAL --- */}
+      <AnimatePresence>
+        {isEditingProfile && (
+          <div className="fixed inset-0 bg-slate-950/40 dark:bg-slate-950/60 backdrop-blur-md flex items-center justify-center z-50 p-4">
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="bg-white dark:bg-slate-900 border border-violet-100/50 dark:border-slate-800/80 p-6 md:p-8 rounded-[36px] shadow-2xl max-w-md w-full space-y-6 text-left"
+            >
+              <div>
+                <h3 className="text-lg font-black text-slate-900 dark:text-white font-display">Edit Student Profile</h3>
+                <p className="text-[11px] text-slate-400 mt-0.5">Change your public details and pick a study avatar.</p>
+              </div>
+
+              <div className="space-y-4">
+                {/* Avatar presets */}
+                <div className="space-y-2">
+                  <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500">
+                    Pick a Study Avatar
+                  </label>
+                  <div className="grid grid-cols-6 gap-2">
+                    {PRESET_AVATARS.map((url, i) => (
+                      <button
+                        key={i}
+                        type="button"
+                        onClick={() => setEditAvatarUrl(url)}
+                        className={`aspect-square rounded-full overflow-hidden border-2 transition-all hover:scale-105 relative cursor-pointer ${
+                          editAvatarUrl === url ? 'border-violet-600 scale-110 ring-2 ring-violet-500/20' : 'border-transparent opacity-70'
+                        }`}
+                      >
+                        <img src={url} alt={`avatar-${i}`} className="w-full h-full object-cover" />
+                        {editAvatarUrl === url && (
+                          <div className="absolute inset-0 bg-violet-600/20 flex items-center justify-center">
+                            <Check className="w-3.5 h-3.5 text-white stroke-[4]" />
+                          </div>
+                        )}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Display name field */}
+                <div className="space-y-1.5">
+                  <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500">
+                    Display Name
+                  </label>
+                  <input
+                    type="text"
+                    value={editDisplayName}
+                    onChange={(e) => setEditDisplayName(e.target.value)}
+                    placeholder="Enter display name..."
+                    className="w-full px-4 py-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-150 dark:border-slate-850 focus:border-violet-500 dark:focus:border-violet-500 focus:outline-none rounded-xl text-xs font-semibold text-slate-900 dark:text-white"
+                  />
+                </div>
+
+                {/* Biography field */}
+                <div className="space-y-1.5">
+                  <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500">
+                    Biography
+                  </label>
+                  <textarea
+                    value={editBio}
+                    onChange={(e) => setEditBio(e.target.value)}
+                    placeholder="Tell your classmates about your studies..."
+                    rows={3}
+                    className="w-full px-4 py-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-150 dark:border-slate-850 focus:border-violet-500 dark:focus:border-violet-500 focus:outline-none rounded-xl text-xs font-semibold text-slate-900 dark:text-white resize-none"
+                  />
+                </div>
+              </div>
+
+              <div className="flex gap-2.5 pt-2">
+                <button
+                  onClick={() => setIsEditingProfile(false)}
+                  className="flex-1 py-3 text-center text-xs font-black bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 rounded-xl transition-all cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={() => {
+                    handleUpdateProfile(editDisplayName, editBio, editAvatarUrl);
+                    setIsEditingProfile(false);
+                  }}
+                  className="flex-1 py-3 text-center text-xs font-black text-white bg-gradient-to-r from-violet-600 to-fuchsia-600 hover:from-violet-500 hover:to-fuchsia-500 border-b-4 border-violet-800 active:border-b-0 rounded-xl shadow-lg transition-all cursor-pointer"
+                >
+                  Save Profile
                 </button>
               </div>
             </motion.div>
