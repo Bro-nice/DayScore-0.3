@@ -1,0 +1,6 @@
+{
+  "name": "ReflectAI",
+  "description": "A modern AI-powered daily reflection app that helps students improve their productivity and habits using Gemini-guided coaching, Pomodoro focus sessions, and classmate social networks.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
