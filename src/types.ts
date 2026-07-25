@@ -1,3 +1,12 @@
+export interface TodoItem {
+  id: string;
+  text: string;
+  completed: boolean;
+  category?: string;
+  isAiGenerated?: boolean;
+  createdAt: string;
+}
+
 export interface Profile {
   email: string;
   username: string;
@@ -21,6 +30,15 @@ export interface Profile {
     lastActiveDate: string | null;
   };
   achievements: string[];
+  gems?: number;
+  streakFreezes?: number;
+  driveTokens?: {
+    accessToken: string;
+    refreshToken?: string;
+    expiresAt: number;
+    email: string;
+    syncedAt?: string;
+  };
 }
 
 export interface JournalEntry {
@@ -53,13 +71,15 @@ export interface FeedPost {
   authorEmail: string;
   authorName: string;
   authorAvatar: string;
-  type: 'journal_score' | 'study_session' | 'achievement' | 'custom';
+  type: 'journal_score' | 'study_session' | 'pomodoro_summary' | 'achievement' | 'custom';
   content: string;
   metadata?: {
     score?: number;
     emoji?: string;
     studyMinutes?: number;
     studyCategory?: string;
+    pomodoroCycles?: number;
+    note?: string;
     achievementTitle?: string;
   };
   timestamp: string;

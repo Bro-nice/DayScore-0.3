@@ -5,6 +5,8 @@ import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI, Type } from '@google/genai';
+import crypto from 'crypto';
+import nodemailer from 'nodemailer';
 
 dotenv.config();
 
@@ -36,6 +38,15 @@ interface Profile {
     lastActiveDate: string | null;
   };
   achievements: string[]; // unlocked achievement IDs
+  gems?: number;
+  streakFreezes?: number;
+  driveTokens?: {
+    accessToken: string;
+    refreshToken?: string;
+    expiresAt: number;
+    email: string;
+    syncedAt?: string;
+  };
 }
 
 interface JournalEntry {
@@ -115,6 +126,9 @@ interface FriendRequest {
 
 interface DBState {
   users: { [email: string]: Profile };
+  passwords?: { [email: string]: string };
+  recoveryPins?: { [email: string]: { pin: string; expiresAt: number } };
+  pendingVerifications?: { [email: string]: { pin: string; expiresAt: number; displayName?: string; password?: string } };
   journals: { [email: string]: JournalEntry[] };
   studySessions: { [email: string]: StudySession[] };
   posts: FeedPost[];
@@ -125,6 +139,9 @@ interface DBState {
 
 let db: DBState = {
   users: {},
+  passwords: {},
+  recoveryPins: {},
+  pendingVerifications: {},
   journals: {},
   studySessions: {},
   posts: [],
@@ -140,7 +157,7 @@ const SIMULATED_CLASSMATES = [
     username: 'lukas_codes',
     displayName: 'Lukas Weber',
     bio: 'CS sophomore 💻. Sleep is just a time-out. Building compilers & sipping espresso.',
-    avatarUrl: 'https://images.unsplash.com/photo-1539571696357-5a69c17a67c6?auto=format&fit=crop&q=80&w=120',
+    avatarUrl: 'https://api.dicebear.com/7.x/bottts/svg?seed=Qorvin&backgroundColor=1e293b,0f172a&backgroundType=gradientLinear',
     theme: 'dark' as const,
     language: 'English',
     settings: { notifications: true, aiCoachingLevel: 'deep' as const, isProfilePublic: true, showOnlineStatus: true },
@@ -152,7 +169,7 @@ const SIMULATED_CLASSMATES = [
     username: 'emma_grinds',
     displayName: 'Emma Watson',
     bio: 'Pre-Med Bio major 🩺. Pomodoro enthusiast & coffee dependent ☕. Always studying.',
-    avatarUrl: 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?auto=format&fit=crop&q=80&w=120',
+    avatarUrl: 'https://api.dicebear.com/7.x/adventurer/svg?seed=Twiblo&backgroundColor=831843,9d174d&backgroundType=gradientLinear',
     theme: 'light' as const,
     language: 'English',
     settings: { notifications: true, aiCoachingLevel: 'standard' as const, isProfilePublic: true, showOnlineStatus: true },
@@ -164,7 +181,7 @@ const SIMULATED_CLASSMATES = [
     username: 'yuki_zen',
     displayName: 'Yuki Tanaka',
     bio: 'Daily mindfulness & organic chem 🧘‍♀️. Consistent reflection is key to growth.',
-    avatarUrl: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&q=80&w=120',
+    avatarUrl: 'https://api.dicebear.com/7.x/adventurer/svg?seed=Rivva&backgroundColor=0284c7,38bdf8&backgroundType=gradientLinear',
     theme: 'system' as const,
     language: 'Japanese',
     settings: { notifications: false, aiCoachingLevel: 'aggressive' as const, isProfilePublic: true, showOnlineStatus: true },
@@ -274,6 +291,9 @@ function loadDB() {
       db = JSON.parse(content);
       // Ensure key structures exist
       if (!db.users) db.users = {};
+      if (!db.passwords) db.passwords = {};
+      if (!db.recoveryPins) db.recoveryPins = {};
+      if (!db.pendingVerifications) db.pendingVerifications = {};
       if (!db.journals) db.journals = {};
       if (!db.studySessions) db.studySessions = {};
       if (!db.posts) db.posts = [];
@@ -386,97 +406,501 @@ function generateFallbackEvaluation(text: string) {
   };
 }
 
+const JWT_SECRET = process.env.JWT_SECRET || 'reflect-ai-super-secure-key-1357924680';
+
+// Cryptographically secure password hashing
+function getSecurePasswordHash(password: string): string {
+  const salt = crypto.randomBytes(16).toString('hex');
+  const hash = crypto.pbkdf2Sync(password, salt, 10000, 64, 'sha512').toString('hex');
+  return `${salt}:${hash}`;
+}
+
+// Verify standard or hashed password
+function verifyPassword(password: string, storedHash: string): boolean {
+  if (!storedHash.includes(':')) {
+    // Legacy fallback for pre-existing plaintext passwords
+    return password === storedHash;
+  }
+  const [salt, hash] = storedHash.split(':');
+  const computedHash = crypto.pbkdf2Sync(password, salt, 10000, 64, 'sha512').toString('hex');
+  return computedHash === hash;
+}
+
+// Generate cryptographically signed web token (session token)
+function generateAuthToken(email: string): string {
+  const payload = {
+    email: email.trim().toLowerCase(),
+    exp: Date.now() + 30 * 24 * 60 * 60 * 1000 // 30 days
+  };
+  const payloadStr = Buffer.from(JSON.stringify(payload)).toString('base64url');
+  const signature = crypto
+    .createHmac('sha256', JWT_SECRET)
+    .update(payloadStr)
+    .digest('base64url');
+  return `${payloadStr}.${signature}`;
+}
+
+// Verify cryptographically signed token
+function verifyAuthToken(token: string): string | null {
+  if (!token) return null;
+  const parts = token.split('.');
+  if (parts.length !== 2) return null;
+  const [payloadStr, signature] = parts;
+  const expectedSignature = crypto
+    .createHmac('sha256', JWT_SECRET)
+    .update(payloadStr)
+    .digest('base64url');
+  if (signature !== expectedSignature) return null;
+
+  try {
+    const payload = JSON.parse(Buffer.from(payloadStr, 'base64url').toString('utf8'));
+    if (Date.now() > payload.exp) {
+      return null; // Expired
+    }
+    return payload.email;
+  } catch {
+    return null;
+  }
+}
+
+// --- EMAIL VERIFICATION DISPATCHER ---
+function getMailTransporter() {
+  const host = process.env.SMTP_HOST || process.env.EMAIL_HOST;
+  const port = parseInt(process.env.SMTP_PORT || process.env.EMAIL_PORT || '587', 10);
+  const user = process.env.SMTP_USER || process.env.EMAIL_USER;
+  const pass = process.env.SMTP_PASS || process.env.EMAIL_PASS || process.env.EMAIL_PASSWORD;
+
+  if (host && user && pass) {
+    return nodemailer.createTransport({
+      host,
+      port,
+      secure: port === 465,
+      auth: { user, pass }
+    });
+  }
+
+  const gmailUser = process.env.GMAIL_USER;
+  const gmailPass = process.env.GMAIL_PASS || process.env.GMAIL_APP_PASSWORD;
+  if (gmailUser && gmailPass) {
+    return nodemailer.createTransport({
+      service: 'gmail',
+      auth: { user: gmailUser, pass: gmailPass }
+    });
+  }
+
+  return null;
+}
+
+async function sendEmailVerificationCode(toEmail: string, pin: string, type: 'registration' | 'reset' = 'registration') {
+  const transporter = getMailTransporter();
+  const subject = type === 'registration' 
+    ? `🔐 Your BaBU Registration PIN: ${pin}`
+    : `🔑 Your BaBU Password Reset PIN: ${pin}`;
+  
+  const htmlContent = `
+    <div style="font-family: system-ui, -apple-system, sans-serif; max-width: 520px; margin: 0 auto; padding: 32px 24px; background: #0f172a; color: #f8fafc; border-radius: 24px; border: 1px solid #1e293b;">
+      <div style="text-align: center; margin-bottom: 24px;">
+        <div style="display: inline-block; padding: 12px; background: rgba(168, 85, 247, 0.15); border-radius: 20px; margin-bottom: 12px;">
+          <span style="font-size: 32px;">🎓</span>
+        </div>
+        <h1 style="font-size: 24px; font-weight: 900; color: #ffffff; margin: 0; letter-spacing: -0.5px;">BaBU Student Hub</h1>
+        <p style="font-size: 13px; color: #94a3b8; margin-top: 4px;">Active Email Account Verification</p>
+      </div>
+
+      <div style="background: rgba(30, 41, 59, 0.8); border: 1px solid rgba(148, 163, 184, 0.1); border-radius: 20px; padding: 24px; text-align: center; margin-bottom: 24px;">
+        <p style="font-size: 14px; color: #cbd5e1; margin: 0 0 16px 0; line-height: 1.5;">
+          ${type === 'registration' 
+            ? 'Thank you for signing up! Enter the following unique 6-digit PIN code in the app to confirm your active email address and gain access to create your account:'
+            : 'We received a request to reset your password. Use the verification PIN below to reset your password:'}
+        </p>
+
+        <div style="background: linear-gradient(135deg, rgba(124, 58, 237, 0.2), rgba(217, 70, 239, 0.2)); border: 2px dashed #7c3aed; border-radius: 16px; padding: 18px; margin: 20px 0; display: inline-block; width: 85%;">
+          <span style="font-family: monospace; font-size: 36px; font-weight: 900; letter-spacing: 8px; color: #e879f9;">${pin}</span>
+        </div>
+
+        <p style="font-size: 12px; color: #64748b; margin-top: 12px;">
+          ⏳ This verification PIN is valid for <strong>10 minutes</strong>. Please do not share this code with anyone.
+        </p>
+      </div>
+
+      <div style="text-align: center; font-size: 11px; color: #475569; border-top: 1px solid #1e293b; padding-top: 16px;">
+        If you did not request this email, please ignore this message.<br/>
+        &copy; ${new Date().getFullYear()} BaBU Student Hub • Active Email Security
+      </div>
+    </div>
+  `;
+
+  if (transporter) {
+    try {
+      const fromAddress = process.env.SMTP_FROM || process.env.EMAIL_FROM || '"BaBU Student Hub Verification" <no-reply@babu-studenthub.com>';
+      await transporter.sendMail({
+        from: fromAddress,
+        to: toEmail,
+        subject,
+        html: htmlContent
+      });
+      console.log(`[EMAIL DISPATCH SUCCESS] Real email sent to ${toEmail} with PIN: ${pin}`);
+      return { sent: true };
+    } catch (err: any) {
+      console.error(`[EMAIL DISPATCH ERROR] Failed to send email via SMTP to ${toEmail}:`, err?.message || err);
+      return { sent: false, error: err?.message || err };
+    }
+  } else {
+    console.log(`[EMAIL DISPATCH SIMULATED] Verification PIN for ${toEmail}: ${pin}`);
+    return { sent: false, simulated: true };
+  }
+}
+
 // --- EXPRESS ROUTER ---
 async function startServer() {
   const app = express();
-  app.use(express.json());
+  app.use(express.json({ limit: '50mb' }));
 
-  // Helper middleware to verify email authentication (represented simply in headers or queries)
+  // Strict CORS policy and preflight handling
+  app.use((req, res, next) => {
+    const origin = req.headers.origin;
+    if (origin) {
+      if (
+        origin.includes('localhost') ||
+        origin.includes('aistudio.google.com') ||
+        origin.includes('webcontainer.io') ||
+        origin.includes('run.app')
+      ) {
+        res.setHeader('Access-Control-Allow-Origin', origin);
+      }
+    }
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-auth-email, x-auth-token');
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
+
+    if (req.method === 'OPTIONS') {
+      return res.sendStatus(200);
+    }
+    next();
+  });
+
+  // Helper middleware to verify email authentication securely via tokens
   const getAuthenticatedUser = (req: express.Request): Profile | null => {
-    const email = req.headers['x-auth-email'] as string;
+    const token = req.headers['x-auth-token'] as string;
+    const emailHeader = req.headers['x-auth-email'] as string;
+
+    let email: string | null = null;
+
+    if (token) {
+      email = verifyAuthToken(token);
+    } else if (emailHeader && emailHeader.includes('.')) {
+      email = verifyAuthToken(emailHeader);
+    }
+
+    // Support pre-seeded classmate simulation accounts (emma, lukas)
+    if (!email && emailHeader) {
+      const trimmedEmail = emailHeader.trim().toLowerCase();
+      if (trimmedEmail === 'emma@reflect.edu' || trimmedEmail === 'lukas@reflect.edu') {
+        email = trimmedEmail;
+      }
+    }
+
     if (!email) return null;
     return db.users[email] || null;
   };
 
-  // 1. Google Sign-In Verification
-  app.post('/api/auth/login', (req, res) => {
-    const { email, displayName, photoUrl } = req.body;
+  // Helper to register user and seed initial classmate friends + welcome chat rooms
+  const registerNewUser = (email: string, displayName?: string, photoUrl?: string): Profile => {
+    const username = email.split('@')[0].replace(/[^a-zA-Z0-9]/g, '_') + '_' + Math.floor(100 + Math.random() * 900);
+    const user: Profile = {
+      email,
+      username,
+      displayName: displayName || email.split('@')[0],
+      bio: 'Just another passionate student reflecting on their growth! 🌱',
+      avatarUrl: photoUrl || `https://api.dicebear.com/7.x/adventurer/svg?seed=${username}`,
+      theme: 'light',
+      language: 'English',
+      settings: {
+        notifications: true,
+        aiCoachingLevel: 'standard',
+        isProfilePublic: true,
+        showOnlineStatus: true,
+      },
+      stats: {
+        averageScore: 0,
+        highestScore: 0,
+        longestStreak: 0,
+        currentStreak: 0,
+        totalStudyHours: 0,
+        lastActiveDate: null,
+      },
+      achievements: [],
+      gems: 150,
+      streakFreezes: 1,
+    };
+    db.users[email] = user;
+    db.friends[email] = ['emma@reflect.edu', 'lukas@reflect.edu']; // auto-add classmates as friends
+    
+    // Auto-add back from classmates
+    if (!db.friends['emma@reflect.edu']) db.friends['emma@reflect.edu'] = [];
+    if (!db.friends['lukas@reflect.edu']) db.friends['lukas@reflect.edu'] = [];
+    db.friends['emma@reflect.edu'].push(email);
+    db.friends['lukas@reflect.edu'].push(email);
+
+    // Create pre-seeded chat conversations with them
+    const roomEmma = ['emma@reflect.edu', email].sort().join('_');
+    db.chatRooms.push({
+      id: roomEmma,
+      participants: ['emma@reflect.edu', email].sort(),
+      messages: [{
+        id: `m_welcome_${roomEmma}`,
+        senderEmail: 'emma@reflect.edu',
+        text: `Welcome to BaBU! Let's help each other stay accountable. Let me know if you want to study together!`,
+        timestamp: new Date().toISOString(),
+        reactions: {},
+        read: false
+      }],
+      typingEmails: [],
+      pinnedBy: []
+    });
+
+    const roomLukas = ['lukas@reflect.edu', email].sort().join('_');
+    db.chatRooms.push({
+      id: roomLukas,
+      participants: ['lukas@reflect.edu', email].sort(),
+      messages: [{
+        id: `m_welcome_${roomLukas}`,
+        senderEmail: 'lukas@reflect.edu',
+        text: `What's up! Glad you joined. I am working on my compilers project, let's keep those scores high!`,
+        timestamp: new Date().toISOString(),
+        reactions: {},
+        read: false
+      }],
+      typingEmails: [],
+      pinnedBy: []
+    });
+
+    saveDB();
+    return user;
+  };
+
+  // 1a. Check if email is registered
+  app.post('/api/auth/check', (req, res) => {
+    const { email } = req.body;
     if (!email) {
-      return res.status(400).json({ error: 'Email is required' });
+      return res.status(400).json({ error: 'Email is required.' });
+    }
+    const trimmedEmail = email.trim().toLowerCase();
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(trimmedEmail)) {
+      return res.status(400).json({ error: 'Please enter a valid email format.' });
     }
 
-    let user = db.users[email];
+    const exists = !!db.users[trimmedEmail];
+    res.json({ exists });
+  });
+
+  // 1b. Standard Login with Password
+  app.post('/api/auth/login', (req, res) => {
+    const { email, password } = req.body;
+    if (!email) {
+      return res.status(400).json({ error: 'Email is required.' });
+    }
+    const trimmedEmail = email.trim().toLowerCase();
+
+    const user = db.users[trimmedEmail];
     if (!user) {
-      // Create new user profile
-      const username = email.split('@')[0].replace(/[^a-zA-Z0-9]/g, '_') + '_' + Math.floor(100 + Math.random() * 900);
-      user = {
-        email,
-        username,
-        displayName: displayName || email.split('@')[0],
-        bio: 'Just another passionate student reflecting on their growth! 🌱',
-        avatarUrl: photoUrl || `https://api.dicebear.com/7.x/adventurer/svg?seed=${username}`,
-        theme: 'light',
-        language: 'English',
-        settings: {
-          notifications: true,
-          aiCoachingLevel: 'standard',
-          isProfilePublic: true,
-          showOnlineStatus: true,
-        },
-        stats: {
-          averageScore: 0,
-          highestScore: 0,
-          longestStreak: 0,
-          currentStreak: 0,
-          totalStudyHours: 0,
-          lastActiveDate: null,
-        },
-        achievements: [],
-      };
-      db.users[email] = user;
-      db.friends[email] = ['emma@reflect.edu', 'lukas@reflect.edu']; // auto-add classmates as friends
-      
-      // Auto-add back from classmates
-      db.friends['emma@reflect.edu'].push(email);
-      db.friends['lukas@reflect.edu'].push(email);
+      return res.status(404).json({ error: 'Account not found. Please register first.' });
+    }
 
-      // Create pre-seeded chat conversations with them
-      const roomEmma = ['emma@reflect.edu', email].sort().join('_');
-      db.chatRooms.push({
-        id: roomEmma,
-        participants: ['emma@reflect.edu', email].sort(),
-        messages: [{
-          id: `m_welcome_${roomEmma}`,
-          senderEmail: 'emma@reflect.edu',
-          text: `Welcome to ReflectAI! Let's help each other stay accountable. Let me know if you want to study together!`,
-          timestamp: new Date().toISOString(),
-          reactions: {},
-          read: false
-        }],
-        typingEmails: [],
-        pinnedBy: []
-      });
+    if (!password) {
+      return res.status(400).json({ error: 'Password is required.' });
+    }
 
-      const roomLukas = ['lukas@reflect.edu', email].sort().join('_');
-      db.chatRooms.push({
-        id: roomLukas,
-        participants: ['lukas@reflect.edu', email].sort(),
-        messages: [{
-          id: `m_welcome_${roomLukas}`,
-          senderEmail: 'lukas@reflect.edu',
-          text: `What's up! Glad you joined. I am working on my compilers project, let's keep those scores high!`,
-          timestamp: new Date().toISOString(),
-          reactions: {},
-          read: false
-        }],
-        typingEmails: [],
-        pinnedBy: []
-      });
-
+    const dbPassword = db.passwords ? db.passwords[trimmedEmail] : undefined;
+    // Handle database migration for pre-existing accounts that might not have a password
+    if (dbPassword === undefined) {
+      if (!db.passwords) db.passwords = {};
+      db.passwords[trimmedEmail] = getSecurePasswordHash(password);
+      saveDB();
+    } else if (!verifyPassword(password, dbPassword)) {
+      return res.status(401).json({ error: 'Incorrect password. Please try again.' });
+    } else if (!dbPassword.includes(':')) {
+      // Migrate legacy plaintext password to secure hashed format
+      db.passwords[trimmedEmail] = getSecurePasswordHash(password);
       saveDB();
     }
 
-    res.json({ user });
+    res.json({ user, token: generateAuthToken(trimmedEmail) });
+  });
+
+  // 1c. Send Email Verification PIN for Registration
+  app.post('/api/auth/send-verification-pin', async (req, res) => {
+    const { email } = req.body;
+    if (!email) {
+      return res.status(400).json({ error: 'Email address is required.' });
+    }
+    const trimmedEmail = email.trim().toLowerCase();
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(trimmedEmail)) {
+      return res.status(400).json({ error: 'Please enter a valid active email address format (e.g., student@university.edu).' });
+    }
+
+    if (db.users[trimmedEmail]) {
+      return res.status(400).json({ error: 'An account with this email address already exists. Please sign in instead.' });
+    }
+
+    const pin = Math.floor(100000 + Math.random() * 900000).toString();
+    if (!db.pendingVerifications) db.pendingVerifications = {};
+    db.pendingVerifications[trimmedEmail] = {
+      pin,
+      expiresAt: Date.now() + 10 * 60 * 1000 // Valid for 10 minutes
+    };
+    saveDB();
+
+    const dispatch = await sendEmailVerificationCode(trimmedEmail, pin, 'registration');
+
+    res.json({
+      success: true,
+      pin, // Included so dev preview can display simulated notification if SMTP is not configured
+      sent: dispatch.sent,
+      simulated: dispatch.simulated,
+      message: `A 6-digit verification code has been dispatched to ${trimmedEmail}.`
+    });
+  });
+
+  // 1d. Verify PIN & Complete Account Registration
+  app.post('/api/auth/verify-and-register', (req, res) => {
+    const { email, pin, password, displayName } = req.body;
+    if (!email || !pin) {
+      return res.status(400).json({ error: 'Email and verification PIN are required.' });
+    }
+    const trimmedEmail = email.trim().toLowerCase();
+
+    if (!password || password.length < 4) {
+      return res.status(400).json({ error: 'Password must be at least 4 characters long.' });
+    }
+
+    const pending = db.pendingVerifications ? db.pendingVerifications[trimmedEmail] : undefined;
+    if (!pending || pending.pin !== pin || Date.now() > pending.expiresAt) {
+      return res.status(400).json({ error: 'Invalid or expired 6-digit verification PIN. Please request a new code.' });
+    }
+
+    if (db.users[trimmedEmail]) {
+      return res.status(400).json({ error: 'Account already registered. Please sign in.' });
+    }
+
+    // Register user account after successful email verification
+    const user = registerNewUser(trimmedEmail, displayName);
+    if (!db.passwords) db.passwords = {};
+    db.passwords[trimmedEmail] = getSecurePasswordHash(password);
+
+    // Clean up pending verification
+    delete db.pendingVerifications[trimmedEmail];
+    saveDB();
+
+    res.json({ user, token: generateAuthToken(trimmedEmail) });
+  });
+
+  // 1e. Legacy/Direct Register Fallback Endpoint
+  app.post('/api/auth/register', (req, res) => {
+    const { email, password, displayName } = req.body;
+    if (!email) {
+      return res.status(400).json({ error: 'Email is required.' });
+    }
+    const trimmedEmail = email.trim().toLowerCase();
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(trimmedEmail)) {
+      return res.status(400).json({ error: 'Please enter a valid email format.' });
+    }
+
+    if (!password || password.length < 4) {
+      return res.status(400).json({ error: 'Password must be at least 4 characters long.' });
+    }
+
+    if (db.users[trimmedEmail]) {
+      return res.status(400).json({ error: 'Email is already registered.' });
+    }
+
+    const user = registerNewUser(trimmedEmail, displayName);
+    if (!db.passwords) db.passwords = {};
+    db.passwords[trimmedEmail] = getSecurePasswordHash(password);
+    saveDB();
+
+    res.json({ user, token: generateAuthToken(trimmedEmail) });
+  });
+
+  // 1f. Direct Google Sign-In (automatic register or login)
+  app.post('/api/auth/google', (req, res) => {
+    const { email, displayName, photoUrl } = req.body;
+    if (!email) {
+      return res.status(400).json({ error: 'Email is required.' });
+    }
+    const trimmedEmail = email.trim().toLowerCase();
+
+    let user = db.users[trimmedEmail];
+    if (!user) {
+      user = registerNewUser(trimmedEmail, displayName, photoUrl);
+      // Give a random fallback password for backend consistency
+      if (!db.passwords) db.passwords = {};
+      db.passwords[trimmedEmail] = getSecurePasswordHash(Math.random().toString(36).substring(2, 12));
+      saveDB();
+    }
+
+    res.json({ user, token: generateAuthToken(trimmedEmail) });
+  });
+
+  // 1g. Forgot Password - Generate 6-digit PIN and send to real email
+  app.post('/api/auth/forgot-password', async (req, res) => {
+    const { email } = req.body;
+    if (!email) {
+      return res.status(400).json({ error: 'Email is required.' });
+    }
+    const trimmedEmail = email.trim().toLowerCase();
+    const user = db.users[trimmedEmail];
+    if (!user) {
+      return res.status(404).json({ error: 'No registered account found with this email.' });
+    }
+
+    const pin = Math.floor(100000 + Math.random() * 900000).toString();
+    if (!db.recoveryPins) db.recoveryPins = {};
+    db.recoveryPins[trimmedEmail] = {
+      pin,
+      expiresAt: Date.now() + 10 * 60 * 1000 // Valid for 10 minutes
+    };
+    saveDB();
+
+    const dispatch = await sendEmailVerificationCode(trimmedEmail, pin, 'reset');
+
+    res.json({
+      success: true,
+      pin, // Return PIN so UI can display simulated email toast if testing locally
+      sent: dispatch.sent,
+      message: 'A 6-digit password reset PIN has been sent to your email address.'
+    });
+  });
+
+  // 1f. Reset Password using recovery PIN
+  app.post('/api/auth/reset-password', (req, res) => {
+    const { email, pin, newPassword } = req.body;
+    if (!email || !pin || !newPassword) {
+      return res.status(400).json({ error: 'All fields are required.' });
+    }
+    const trimmedEmail = email.trim().toLowerCase();
+
+    if (newPassword.length < 4) {
+      return res.status(400).json({ error: 'Password must be at least 4 characters long.' });
+    }
+
+    const record = db.recoveryPins ? db.recoveryPins[trimmedEmail] : undefined;
+    if (!record || record.pin !== pin || Date.now() > record.expiresAt) {
+      return res.status(400).json({ error: 'Invalid or expired recovery PIN.' });
+    }
+
+    // Update password
+    if (!db.passwords) db.passwords = {};
+    db.passwords[trimmedEmail] = getSecurePasswordHash(newPassword);
+    
+    // Delete recovery PIN
+    delete db.recoveryPins[trimmedEmail];
+    saveDB();
+
+    res.json({ success: true, message: 'Password has been reset successfully!' });
   });
 
   // 2. Fetch/Update Profile
@@ -499,6 +923,7 @@ async function startServer() {
     if (settings) user.settings = { ...user.settings, ...settings };
 
     saveDB();
+    triggerBackgroundSync(user);
     res.json({ user });
   });
 
@@ -522,6 +947,431 @@ async function startServer() {
 
     saveDB();
     res.json({ success: true });
+  });
+
+  // --- GOOGLE DRIVE MEMORY SYNC SYSTEM ---
+  const GOOGLE_CLIENT_ID = process.env.OAUTH_CLIENT_ID || process.env.GOOGLE_CLIENT_ID || process.env.CLIENT_ID || '';
+  const GOOGLE_CLIENT_SECRET = process.env.OAUTH_CLIENT_SECRET || process.env.GOOGLE_CLIENT_SECRET || process.env.CLIENT_SECRET || '';
+
+  const getRedirectUri = (req: express.Request) => {
+    if (process.env.APP_URL) {
+      return `${process.env.APP_URL}/api/auth/google-drive/callback`;
+    }
+    const host = req.get('host');
+    const protocol = req.protocol === 'https' || req.headers['x-forwarded-proto'] === 'https' ? 'https' : 'http';
+    return `${protocol}://${host}/api/auth/google-drive/callback`;
+  };
+
+  async function getValidDriveToken(user: Profile): Promise<string | null> {
+    if (!user.driveTokens) return null;
+    const { accessToken, refreshToken, expiresAt } = user.driveTokens;
+    
+    if (expiresAt > Date.now() + 5 * 60 * 1000) {
+      return accessToken;
+    }
+    
+    if (refreshToken && GOOGLE_CLIENT_ID && GOOGLE_CLIENT_SECRET) {
+      try {
+        console.log(`Refreshing Google Drive token for user: ${user.email}`);
+        const res = await fetch('https://oauth2.googleapis.com/token', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams({
+            client_id: GOOGLE_CLIENT_ID,
+            client_secret: GOOGLE_CLIENT_SECRET,
+            refresh_token: refreshToken,
+            grant_type: 'refresh_token'
+          })
+        });
+        const data: any = await res.json();
+        if (res.ok && data.access_token) {
+          user.driveTokens.accessToken = data.access_token;
+          user.driveTokens.expiresAt = Date.now() + (data.expires_in * 1000);
+          if (data.refresh_token) {
+            user.driveTokens.refreshToken = data.refresh_token;
+          }
+          saveDB();
+          return data.access_token;
+        } else {
+          console.error('Failed to refresh Google Drive token:', data);
+        }
+      } catch (error) {
+        console.error('Error refreshing Google Drive token:', error);
+      }
+    }
+    return null;
+  }
+
+  async function syncWithGoogleDrive(user: Profile): Promise<{ success: boolean; message: string; syncedAt?: string }> {
+    const token = await getValidDriveToken(user);
+    if (!token) {
+      return { success: false, message: 'Google Drive is not connected or token expired. Please reconnect.' };
+    }
+    
+    const email = user.email;
+    
+    try {
+      // 1. Search for existing 'reflectai_memory.json' in appDataFolder
+      const listRes = await fetch(
+        'https://www.googleapis.com/drive/v3/files?spaces=appDataFolder&q=name=%27reflectai_memory.json%27&fields=files(id,name)',
+        {
+          headers: { Authorization: `Bearer ${token}` }
+        }
+      );
+      
+      if (!listRes.ok) {
+        const errData: any = await listRes.json();
+        console.error('Error listing Drive files:', errData);
+        return { success: false, message: `Failed to access Google Drive: ${errData.error?.message || listRes.statusText}` };
+      }
+      
+      const listData: any = await listRes.json();
+      const existingFile = listData.files && listData.files[0];
+      
+      // Prepare local data
+      const localData = {
+        profile: {
+          displayName: user.displayName,
+          bio: user.bio,
+          avatarUrl: user.avatarUrl,
+          theme: user.theme,
+          language: user.language,
+          settings: user.settings,
+          stats: user.stats,
+          achievements: user.achievements
+        },
+        journals: db.journals[email] || [],
+        studySessions: db.studySessions[email] || [],
+        updatedAt: new Date().toISOString()
+      };
+      
+      let mergedData = { ...localData };
+      let fileId = existingFile?.id;
+      
+      if (fileId) {
+        // 2. File exists! Let's download it
+        const downloadRes = await fetch(
+          `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`,
+          {
+            headers: { Authorization: `Bearer ${token}` }
+          }
+        );
+        
+        if (downloadRes.ok) {
+          try {
+            const remoteData: any = await downloadRes.json();
+            
+            // Merge Journals
+            const remoteJournals = remoteData.journals || [];
+            const localJournals = db.journals[email] || [];
+            const mergedJournalsMap = new Map();
+            
+            remoteJournals.forEach((j: any) => mergedJournalsMap.set(j.id, j));
+            localJournals.forEach((j: any) => {
+              const existing = mergedJournalsMap.get(j.id);
+              if (!existing || new Date(j.savedAt) > new Date(existing.savedAt)) {
+                mergedJournalsMap.set(j.id, j);
+              }
+            });
+            mergedData.journals = Array.from(mergedJournalsMap.values());
+            
+            // Merge Study Sessions
+            const remoteSessions = remoteData.studySessions || [];
+            const localSessions = db.studySessions[email] || [];
+            const mergedSessionsMap = new Map();
+            
+            remoteSessions.forEach((s: any) => mergedSessionsMap.set(s.id, s));
+            localSessions.forEach((s: any) => mergedSessionsMap.set(s.id, s));
+            mergedData.studySessions = Array.from(mergedSessionsMap.values());
+            
+            // Merge Profile stats/settings
+            if (remoteData.profile) {
+              const remoteProf = remoteData.profile;
+              mergedData.profile.stats = {
+                averageScore: Math.max(localData.profile.stats.averageScore, remoteProf.stats?.averageScore || 0),
+                highestScore: Math.max(localData.profile.stats.highestScore, remoteProf.stats?.highestScore || 0),
+                longestStreak: Math.max(localData.profile.stats.longestStreak, remoteProf.stats?.longestStreak || 0),
+                currentStreak: Math.max(localData.profile.stats.currentStreak, remoteProf.stats?.currentStreak || 0),
+                totalStudyHours: Math.max(localData.profile.stats.totalStudyHours, remoteProf.stats?.totalStudyHours || 0),
+                lastActiveDate: localData.profile.stats.lastActiveDate || remoteProf.stats?.lastActiveDate || null
+              };
+              
+              const mergedAchievementsSet = new Set([
+                ...localData.profile.achievements,
+                ...(remoteProf.achievements || [])
+              ]);
+              mergedData.profile.achievements = Array.from(mergedAchievementsSet);
+            }
+            
+            // Update DB state
+            db.journals[email] = mergedData.journals;
+            db.studySessions[email] = mergedData.studySessions;
+            user.stats = mergedData.profile.stats;
+            user.achievements = mergedData.profile.achievements;
+            
+          } catch (parseError) {
+            console.error('Error parsing remote data file, overwriting instead:', parseError);
+          }
+        } else {
+          console.error('Failed to download remote file content:', downloadRes.statusText);
+        }
+      }
+      
+      // 3. Save to Google Drive
+      const syncedAt = new Date().toISOString();
+      mergedData.updatedAt = syncedAt;
+      
+      if (fileId) {
+        // Update existing file content
+        const updateRes = await fetch(
+          `https://www.googleapis.com/upload/drive/v3/files/${fileId}?uploadType=media`,
+          {
+            method: 'PATCH',
+            headers: {
+              Authorization: `Bearer ${token}`,
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(mergedData)
+          }
+        );
+        
+        if (!updateRes.ok) {
+          const updateErr: any = await updateRes.json();
+          console.error('Failed to update Google Drive file content:', updateErr);
+          return { success: false, message: `Failed to save to Google Drive: ${updateErr.error?.message || updateRes.statusText}` };
+        }
+      } else {
+        // Create new file
+        const boundary = 'reflectai_boundary_sync';
+        const metadata = {
+          name: 'reflectai_memory.json',
+          parents: ['appDataFolder']
+        };
+        
+        const multipartBody = [
+          `--${boundary}`,
+          'Content-Type: application/json; charset=UTF-8',
+          '',
+          JSON.stringify(metadata),
+          `--${boundary}`,
+          'Content-Type: application/json',
+          '',
+          JSON.stringify(mergedData),
+          `--${boundary}--`
+        ].join('\r\n');
+        
+        const createRes = await fetch(
+          'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart',
+          {
+            method: 'POST',
+            headers: {
+              Authorization: `Bearer ${token}`,
+              'Content-Type': `multipart/related; boundary=${boundary}`
+            },
+            body: multipartBody
+          }
+        );
+        
+        if (!createRes.ok) {
+          const createErr: any = await createRes.json();
+          console.error('Failed to create Google Drive file content:', createErr);
+          return { success: false, message: `Failed to create file on Google Drive: ${createErr.error?.message || createRes.statusText}` };
+        }
+      }
+      
+      // Save locally
+      if (user.driveTokens) {
+        user.driveTokens.syncedAt = syncedAt;
+      }
+      saveDB();
+      
+      return { success: true, message: 'Google Drive synchronized successfully!', syncedAt };
+      
+    } catch (error: any) {
+      console.error('Sync execution failed:', error);
+      return { success: false, message: `Connection error during sync: ${error.message || error}` };
+    }
+  }
+
+  const triggerBackgroundSync = (user: Profile) => {
+    if (user.driveTokens) {
+      console.log(`Triggering auto background sync for user: ${user.email}`);
+      syncWithGoogleDrive(user).catch(err => {
+        console.error('Background sync failed:', err);
+      });
+    }
+  };
+
+  // Google Drive Authentication Url Endpoint
+  app.get('/api/auth/google-drive/url', (req, res) => {
+    const email = req.query.email as string;
+    const state = email ? encodeURIComponent(email) : 'login';
+
+    if (!GOOGLE_CLIENT_ID) {
+      return res.status(500).json({ error: 'Google OAuth Client ID is not configured on the host server.' });
+    }
+
+    const redirectUri = getRedirectUri(req);
+    const params = new URLSearchParams({
+      client_id: GOOGLE_CLIENT_ID,
+      redirect_uri: redirectUri,
+      response_type: 'code',
+      scope: 'https://www.googleapis.com/auth/drive.appdata https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile',
+      access_type: 'offline',
+      prompt: 'consent',
+      state: state
+    });
+
+    const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`;
+    res.json({ url: authUrl });
+  });
+
+  // Google Drive Auth Callback
+  app.get(['/api/auth/google-drive/callback', '/api/auth/google-drive/callback/'], async (req, res) => {
+    const { code, state } = req.query;
+    if (!code || !state) {
+      return res.status(400).send('Invalid auth callback arguments.');
+    }
+
+    try {
+      const redirectUri = getRedirectUri(req);
+      const tokenResponse = await fetch('https://oauth2.googleapis.com/token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+          code: code as string,
+          client_id: GOOGLE_CLIENT_ID,
+          client_secret: GOOGLE_CLIENT_SECRET,
+          redirect_uri: redirectUri,
+          grant_type: 'authorization_code',
+        }),
+      });
+
+      const tokenData: any = await tokenResponse.json();
+      if (!tokenResponse.ok) {
+        console.error('Google token exchange error:', tokenData);
+        return res.status(500).send(`Token exchange failed: ${tokenData.error_description || tokenResponse.statusText}`);
+      }
+
+      // Fetch user profile from Google Userinfo API
+      let gUser: any = null;
+      try {
+        const userinfoRes = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+          headers: { Authorization: `Bearer ${tokenData.access_token}` }
+        });
+        if (userinfoRes.ok) {
+          gUser = await userinfoRes.json();
+        }
+      } catch (err) {
+        console.error('Failed to fetch Google userinfo:', err);
+      }
+
+      let email = '';
+      if (state !== 'login') {
+        email = decodeURIComponent(state as string).trim().toLowerCase();
+      } else if (gUser && gUser.email) {
+        email = gUser.email.trim().toLowerCase();
+      }
+
+      if (!email) {
+        return res.status(400).send('Could not determine Google account email.');
+      }
+
+      let user = db.users[email];
+      const isNewUser = !user;
+      if (!user) {
+        const displayName = (gUser && gUser.name) || email.split('@')[0];
+        const photoUrl = (gUser && gUser.picture) || `https://api.dicebear.com/7.x/adventurer/svg?seed=${displayName}`;
+        user = registerNewUser(email, displayName, photoUrl);
+      }
+
+      user.driveTokens = {
+        accessToken: tokenData.access_token,
+        refreshToken: tokenData.refresh_token,
+        expiresAt: Date.now() + (tokenData.expires_in * 1000),
+        email: email,
+        syncedAt: new Date().toISOString()
+      };
+
+      // Perform an initial sync immediately upon connection
+      await syncWithGoogleDrive(user);
+
+      saveDB();
+
+      // Return a popup close page that posts a message back to parent
+      res.send(`
+        <html>
+          <body style="font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif; display: flex; flex-direction: column; justify-content: center; align-items: center; height: 100vh; background: #faf9f6; color: #1e293b; text-align: center; padding: 24px;">
+            <div style="background: white; padding: 32px; border-radius: 24px; box-shadow: 0 4px 20px rgba(0,0,0,0.05); max-width: 400px; border: 1px solid #f1f0ec;">
+              <div style="font-size: 48px; margin-bottom: 16px;">💾</div>
+              <h2 style="font-weight: 800; font-size: 20px; margin: 0 0 8px 0; color: #7c3aed;">Google Cloud Memory Sync Active!</h2>
+              <p style="font-size: 14px; color: #64748b; line-height: 1.5; margin: 0 0 24px 0;">
+                ${isNewUser ? 'Your new DayScore account has been registered' : 'Successfully authenticated'} and connected securely to Google Drive.
+              </p>
+              <p style="font-size: 11px; color: #94a3b8; font-weight: 500;">Returning to application...</p>
+            </div>
+            <script>
+              if (window.opener) {
+                window.opener.postMessage({ 
+                  type: 'GOOGLE_LOGIN_SUCCESS', 
+                  user: ${JSON.stringify(user)},
+                  token: "${generateAuthToken(email)}"
+                }, '*');
+              }
+              setTimeout(() => {
+                window.close();
+              }, 1500);
+            </script>
+          </body>
+        </html>
+      `);
+    } catch (err: any) {
+      console.error('Error in google drive oauth callback:', err);
+      res.status(500).send(`OAuth callback error: ${err.message || err}`);
+    }
+  });
+
+  // Google Drive connection status
+  app.get('/api/google-drive/status', (req, res) => {
+    const user = getAuthenticatedUser(req);
+    if (!user) return res.status(401).json({ error: 'Unauthorized' });
+
+    res.json({
+      connected: !!user.driveTokens,
+      syncedAt: user.driveTokens?.syncedAt || null,
+      email: user.driveTokens?.email || null
+    });
+  });
+
+  // Google Drive Manual Sync trigger
+  app.post('/api/google-drive/sync', async (req, res) => {
+    const user = getAuthenticatedUser(req);
+    if (!user) return res.status(401).json({ error: 'Unauthorized' });
+    if (!user.driveTokens) return res.status(400).json({ error: 'Google Drive is not connected for this profile.' });
+
+    const result = await syncWithGoogleDrive(user);
+    if (result.success) {
+      res.json({
+        success: true,
+        message: result.message,
+        syncedAt: result.syncedAt,
+        journals: db.journals[user.email] || [],
+        studySessions: db.studySessions[user.email] || [],
+        user
+      });
+    } else {
+      res.status(500).json({ error: result.message });
+    }
+  });
+
+  // Google Drive Disconnect
+  app.post('/api/google-drive/disconnect', (req, res) => {
+    const user = getAuthenticatedUser(req);
+    if (!user) return res.status(401).json({ error: 'Unauthorized' });
+
+    delete user.driveTokens;
+    saveDB();
+    res.json({ success: true, message: 'Google Drive cloud memory disconnected successfully.' });
   });
 
   // 3. Journals List & Autosave Drafts
@@ -562,6 +1412,7 @@ async function startServer() {
 
     db.journals[user.email] = userJournals;
     saveDB();
+    triggerBackgroundSync(user);
     res.json({ journal: existing });
   });
 
@@ -633,7 +1484,12 @@ async function startServer() {
     // Update User Stats (Streak & averages)
     const todayStr = new Date().toISOString().split('T')[0];
     const lastActive = user.stats.lastActiveDate;
+    let streakFrozen = false;
     
+    // Ensure properties exist
+    if (user.gems === undefined) user.gems = 150;
+    if (user.streakFreezes === undefined) user.streakFreezes = 1;
+
     // Streaks logic
     if (lastActive === null) {
       user.stats.currentStreak = 1;
@@ -646,13 +1502,23 @@ async function startServer() {
       if (diffDays === 1) {
         user.stats.currentStreak += 1;
       } else if (diffDays > 1) {
-        user.stats.currentStreak = 1;
+        if (user.streakFreezes > 0) {
+          user.streakFreezes -= 1;
+          streakFrozen = true;
+          // Protect streak and increment it for today's active entry
+          user.stats.currentStreak += 1;
+        } else {
+          user.stats.currentStreak = 1;
+        }
       }
     }
     user.stats.lastActiveDate = todayStr;
     if (user.stats.currentStreak > user.stats.longestStreak) {
       user.stats.longestStreak = user.stats.currentStreak;
     }
+
+    // Award Gems based on score
+    user.gems += (entry.score || 0);
 
     // Averages
     const evaluatedJournals = userJournals.filter(j => j.score !== null);
@@ -711,7 +1577,49 @@ async function startServer() {
 
     db.journals[user.email] = userJournals;
     saveDB();
-    res.json({ journal: entry, user });
+    triggerBackgroundSync(user);
+    res.json({ journal: entry, user, streakFrozen });
+  });
+
+  // --- FAST & PRECISE VOICE AI TRANSCRIBE ENDPOINT ---
+  app.post('/api/voice-transcribe', async (req, res) => {
+    const user = getAuthenticatedUser(req);
+    if (!user) return res.status(401).json({ error: 'Unauthorized' });
+
+    const { audioData, mimeType } = req.body;
+    if (!audioData) return res.status(400).json({ error: 'No audio data provided' });
+
+    const ai = getAIClient();
+    if (ai) {
+      try {
+        const base64Content = audioData.includes(',') ? audioData.split(',')[1] : audioData;
+        const cleanMimeType = mimeType || 'audio/webm';
+
+        console.log(`Transcribing voice recording for user ${user.email} (${cleanMimeType})...`);
+
+        const aiResponse = await ai.models.generateContent({
+          model: 'gemini-2.5-flash',
+          contents: [
+            {
+              inlineData: {
+                mimeType: cleanMimeType,
+                data: base64Content,
+              },
+            },
+            "Transcribe this spoken voice recording with high precision. Clean up stuttering, repeats, or filler words naturally, and format with proper punctuation, sentence capitalization, and clear structure. Output ONLY the transcribed text string."
+          ],
+        });
+
+        const transcript = aiResponse.text?.trim() || '';
+        if (transcript) {
+          return res.json({ success: true, transcript });
+        }
+      } catch (err: any) {
+        console.error('Gemini voice transcription error:', err);
+      }
+    }
+
+    return res.json({ success: false, error: 'AI transcription service unavailable' });
   });
 
   // 5. Study Sessions
@@ -774,8 +1682,82 @@ async function startServer() {
       db.posts.unshift(post);
     }
 
+    // Award Gems for study session duration
+    if (user.gems === undefined) user.gems = 150;
+    user.gems += Number(durationMinutes);
+
     saveDB();
-    res.json({ session, userStats: user.stats });
+    triggerBackgroundSync(user);
+    res.json({ session, userStats: user.stats, user });
+  });
+
+  // --- AI TO-DO LIST GENERATOR ENDPOINT ---
+  app.post('/api/todos/ai-generate', async (req, res) => {
+    const user = getAuthenticatedUser(req);
+    if (!user) return res.status(401).json({ error: 'Unauthorized' });
+
+    const userJournals = db.journals[user.email] || [];
+    const recentJournals = userJournals.slice(-5);
+    const journalSummaryText = recentJournals.map(j => `Date: ${j.date}, Text: ${j.text}, Score: ${j.score || 'N/A'}, Improvements: ${j.evaluation?.improvements?.join('; ') || 'N/A'}`).join('\n');
+
+    let generatedTasks: Array<{ text: string; category: string }> = [];
+    const ai = getAIClient();
+
+    if (ai) {
+      try {
+        const promptText = `You are DayScore AI productivity coach. Analyze the student's recent reflection logs and evaluations below, then generate 3 to 5 highly specific, actionable, high-impact To-Do items for today/tomorrow to help them improve focus, overcome procrastination, and stay disciplined.
+Student logs:
+${journalSummaryText || 'No previous reflections logged yet. Generate standard high-impact student daily habits.'}
+
+Output JSON strictly as an array of objects with keys "text" (concise action) and "category" (Academic, Focus, Health, or Habit).`;
+
+        const response = await ai.models.generateContent({
+          model: 'gemini-3.5-flash',
+          contents: promptText,
+          config: {
+            responseMimeType: 'application/json',
+            responseSchema: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  text: { type: Type.STRING },
+                  category: { type: Type.STRING }
+                },
+                required: ['text', 'category']
+              }
+            }
+          }
+        });
+
+        const parsed = JSON.parse(response.text?.trim() || '[]');
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          generatedTasks = parsed;
+        }
+      } catch (err) {
+        console.error('AI Todo generation error:', err);
+      }
+    }
+
+    if (generatedTasks.length === 0) {
+      generatedTasks = [
+        { text: "Complete 1 focused 45-min study session before social media", category: "Focus" },
+        { text: "Review yesterday's mistake notes & active revision goals", category: "Academic" },
+        { text: "Put phone in another room during core study block", category: "Habit" },
+        { text: "Take a 20-minute physical walk/exercise break", category: "Health" }
+      ];
+    }
+
+    const todos = generatedTasks.map((t, idx) => ({
+      id: `ai_todo_${Date.now()}_${idx}`,
+      text: t.text,
+      category: t.category || 'Focus',
+      completed: false,
+      isAiGenerated: true,
+      createdAt: new Date().toISOString()
+    }));
+
+    res.json({ success: true, todos });
   });
 
   // 6. Social Feed List, Posts, Comments, Likes, Reactions
@@ -792,7 +1774,7 @@ async function startServer() {
     const user = getAuthenticatedUser(req);
     if (!user) return res.status(401).json({ error: 'Unauthorized' });
 
-    const { content } = req.body;
+    const { content, type, metadata } = req.body;
     if (!content || !content.trim()) return res.status(400).json({ error: 'Content cannot be empty' });
 
     const post: FeedPost = {
@@ -800,8 +1782,9 @@ async function startServer() {
       authorEmail: user.email,
       authorName: user.displayName,
       authorAvatar: user.avatarUrl,
-      type: 'custom',
+      type: type || 'custom',
       content,
+      metadata: metadata || undefined,
       timestamp: new Date().toISOString(),
       likes: [],
       reactions: {},
@@ -1243,7 +2226,7 @@ async function startServer() {
   // --- START SERVER ---
   const port = 3000;
   app.listen(port, '0.0.0.0', () => {
-    console.log(`ReflectAI application listening on http://0.0.0.0:${port}`);
+    console.log(`BaBU application listening on http://0.0.0.0:${port}`);
   });
 }
 
