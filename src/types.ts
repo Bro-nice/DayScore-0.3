@@ -7,12 +7,15 @@ export interface TodoItem {
   createdAt: string;
 }
 
+export type AvatarFrame = 'none' | 'gold' | 'neon' | 'cyber' | 'diamond' | 'fire' | 'emerald' | 'cosmic' | 'flame';
+
 export interface Profile {
   email: string;
   username: string;
   displayName: string;
   bio: string;
   avatarUrl: string;
+  frame?: AvatarFrame;
   theme: 'light' | 'dark' | 'system';
   language: string;
   settings: {
@@ -47,11 +50,17 @@ export interface JournalEntry {
   text: string;
   score: number | null;
   emoji: string | null;
+  title?: string | null;
   evaluation: {
+    score?: number;
+    emoji?: string;
+    title?: string;
     summary: string;
     strengths: string[];
     improvements: string[];
     tomorrowChallenge: string;
+    strength?: string;
+    encouragement?: string;
   } | null;
   isDraft: boolean;
   savedAt: string;
@@ -73,6 +82,7 @@ export interface FeedPost {
   authorAvatar: string;
   type: 'journal_score' | 'study_session' | 'pomodoro_summary' | 'achievement' | 'custom';
   content: string;
+  audience?: 'public' | 'friends';
   metadata?: {
     score?: number;
     emoji?: string;
@@ -102,6 +112,8 @@ export interface Message {
   timestamp: string;
   reactions: { [emoji: string]: string[] };
   read: boolean;
+  audioUrl?: string;
+  audioDuration?: number;
 }
 
 export interface ChatRoom {
@@ -130,6 +142,7 @@ export interface LeaderboardRank {
   username: string;
   displayName: string;
   avatarUrl: string;
+  frame?: AvatarFrame;
   score: number;
   streak: number;
   totalHours: number;

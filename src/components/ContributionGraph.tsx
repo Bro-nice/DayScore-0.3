@@ -2,7 +2,7 @@ import { JournalEntry } from '../types';
 
 interface ContributionGraphProps {
   journals: JournalEntry[];
-  onCellClick?: (evaluation: any) => void;
+  onCellClick?: (evaluation: any, dateStr?: string) => void;
 }
 
 export default function ContributionGraph({ journals, onCellClick }: ContributionGraphProps) {
@@ -65,13 +65,11 @@ export default function ContributionGraph({ journals, onCellClick }: Contributio
             <div
               key={dateStr}
               onClick={() => {
-                if (hasEvaluation && onCellClick) {
-                  onCellClick(entry.evaluation);
+                if (onCellClick) {
+                  onCellClick(entry?.evaluation || null, dateStr);
                 }
               }}
-              className={`w-3 h-3 rounded-sm border transition-all duration-200 hover:scale-125 relative group ${getShadeClass(dateStr)} ${
-                hasEvaluation ? 'cursor-pointer hover:border-violet-500' : 'cursor-default'
-              }`}
+              className={`w-3 h-3 rounded-sm border transition-all duration-200 hover:scale-125 relative group ${getShadeClass(dateStr)} cursor-pointer hover:border-violet-500`}
             >
               {/* Tooltip */}
               <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 hidden group-hover:block z-20 bg-slate-800 text-white text-[10px] py-1 px-2 rounded shadow whitespace-nowrap">

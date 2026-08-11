@@ -4,11 +4,13 @@ import {
   User,
   BookOpen,
   Award,
+  Crown,
   Flame,
   Timer,
   Calendar as CalendarIcon,
   TrendingUp,
   Users,
+  Globe,
   MessageSquare,
   Trophy,
   Settings as SettingsIcon,
@@ -29,6 +31,7 @@ import {
   Clock,
   Sparkles,
   ChevronRight,
+  ChevronLeft,
   Search,
   Share2,
   Check,
@@ -54,14 +57,26 @@ import {
   Sliders,
   FileText,
   AlertTriangle,
-  HardDrive
+  HardDrive,
+  Folder,
+  Phone,
+  Video,
+  Info,
+  Image,
+  Upload,
+  Camera
 } from 'lucide-react';
 
 import {
   LineChart,
   Line,
+  AreaChart,
+  Area,
   BarChart,
   Bar,
+  PieChart,
+  Pie,
+  Cell,
   XAxis,
   YAxis,
   CartesianGrid,
@@ -78,7 +93,8 @@ import {
 import { Profile, JournalEntry, StudySession, FeedPost, ChatRoom, LeaderboardRank, TodoItem } from './types';
 import ConfettiCanvas from './components/ConfettiCanvas';
 import ContributionGraph from './components/ContributionGraph';
-import { CHARACTER_AVATARS } from './data/avatars';
+import { CHARACTER_AVATARS, getFallbackAvatarSvg } from './data/avatars';
+import { SafeAvatar, AvatarFrame } from './components/SafeAvatar';
 
 // --- CRYPTOGRAPHIC AUTH TOKEN FETCH INTERCEPTOR ---
 const originalFetch = window.fetch.bind(window);
@@ -431,6 +447,24 @@ export default function App() {
   const [currentUser, setCurrentUser] = useState<Profile | null>(null);
   const [authLoading, setAuthLoading] = useState(false);
   const [showGoogleModal, setShowGoogleModal] = useState(false);
+  const [savedGoogleAccounts, setSavedGoogleAccounts] = useState<{ email: string; displayName: string; photoUrl: string }[]>(() => {
+    try {
+      const saved = localStorage.getItem('babu_saved_google_accounts');
+      if (saved) return JSON.parse(saved);
+    } catch (e) {
+      console.error('Error reading saved google accounts:', e);
+    }
+    return [];
+  });
+  const [isEnteringNewAccount, setIsEnteringNewAccount] = useState(false);
+  const [customGoogleEmail, setCustomGoogleEmail] = useState('');
+  const [customGoogleName, setCustomGoogleName] = useState('');
+
+  // --- GOOGLE ACCOUNT AUTH & PASSWORD STATE ---
+  const [selectedGoogleAccount, setSelectedGoogleAccount] = useState<{ email: string; displayName: string; photoUrl: string } | null>(null);
+  const [googleAccountIsRegistered, setGoogleAccountIsRegistered] = useState<boolean | null>(null);
+  const [googlePasswordInput, setGooglePasswordInput] = useState('');
+  const [showGooglePasswordText, setShowGooglePasswordText] = useState(false);
 
   // --- GOOGLE DRIVE CLOUD MEMORY STATE ---
   const [driveConnected, setDriveConnected] = useState(false);
@@ -441,8 +475,32 @@ export default function App() {
 
   // --- GENERAL APP STATE ---
   const [currentTab, setCurrentTab] = useState<'home' | 'journals' | 'analytics' | 'social' | 'chat' | 'leaderboard' | 'profile' | 'settings'>('home');
-  const [journals, setJournals] = useState<JournalEntry[]>([]);
-  const [studySessions, setStudySessions] = useState<StudySession[]>([]);
+  const [journals, setJournals] = useState<JournalEntry[]>(() => {
+    try {
+      const savedEmail = localStorage.getItem('reflect_auth_email') || 'guest';
+      const cached = localStorage.getItem(`reflect_journals_${savedEmail}`);
+      if (cached) {
+        const parsed = JSON.parse(cached);
+        if (Array.isArray(parsed)) return parsed;
+      }
+    } catch (e) {
+      console.error('Error loading initial journals:', e);
+    }
+    return [];
+  });
+  const [studySessions, setStudySessions] = useState<StudySession[]>(() => {
+    try {
+      const savedEmail = localStorage.getItem('reflect_auth_email') || 'guest';
+      const cached = localStorage.getItem(`reflect_study_${savedEmail}`);
+      if (cached) {
+        const parsed = JSON.parse(cached);
+        if (Array.isArray(parsed)) return parsed;
+      }
+    } catch (e) {
+      console.error('Error loading initial study sessions:', e);
+    }
+    return [];
+  });
   const [posts, setPosts] = useState<FeedPost[]>([]);
   const [chatRooms, setChatRooms] = useState<ChatRoom[]>([]);
   const [activeRoomId, setActiveRoomId] = useState<string | null>(null);
@@ -467,6 +525,10 @@ export default function App() {
   const [showEvaluationModal, setShowEvaluationModal] = useState(false);
   const [confettiActive, setConfettiActive] = useState(false);
 
+  // --- DATE SELECTION & MULTI-DAY MEMORY STATE ---
+  const todayDateStr = useMemo(() => new Date().toISOString().split('T')[0], []);
+  const [selectedDate, setSelectedDate] = useState<string>(() => new Date().toISOString().split('T')[0]);
+
   // --- REFLECTION WRITER STATE ---
   const [journalText, setJournalText] = useState('');
   const [saveStatus, setSaveStatus] = useState<'saved' | 'saving' | 'error'>('saved');
@@ -483,6 +545,8 @@ export default function App() {
   const [timerSeconds, setTimerSeconds] = useState(25 * 60);
   const [timerIsRunning, setTimerIsRunning] = useState(false);
   const [timerInitialDuration, setTimerInitialDuration] = useState(25 * 60);
+  const [focusedSecondsInCurrentSession, setFocusedSecondsInCurrentSession] = useState(0);
+  const [hasCompletedFocusPeriod, setHasCompletedFocusPeriod] = useState(false);
   const [showTimerFinishModal, setShowTimerFinishModal] = useState(false);
   const [selectedTimerCategory, setSelectedTimerCategory] = useState('Programming');
   const [shareTimerToFeed, setShareTimerToFeed] = useState(true);
@@ -493,15 +557,334 @@ export default function App() {
   const [pomodoroShareNote, setPomodoroShareNote] = useState('');
   const [pomodoroShareLoading, setPomodoroShareLoading] = useState(false);
 
-  // --- CHAT INPUT ---
+  // --- STUDENT SOCIAL FEED STATE ---
+  const [feedTab, setFeedTab] = useState<'public' | 'friends'>('public');
+  const [postAudience, setPostAudience] = useState<'public' | 'friends'>('public');
+  const [customPostText, setCustomPostText] = useState('');
+  const [feedCategoryFilter, setFeedCategoryFilter] = useState<'all' | 'journal_score' | 'pomodoro' | 'study'>('all');
+  const [feedSearchQuery, setFeedSearchQuery] = useState('');
+  const [expandedCommentsPostId, setExpandedCommentsPostId] = useState<string | null>(null);
+
+  // --- CHAT INPUT & DIRECT MESSAGES STATE ---
   const [chatInputText, setChatInputText] = useState('');
   const [chatSidebarTab, setChatSidebarTab] = useState<'chats' | 'friends'>('chats');
+  const [showPeerInfoDrawer, setShowPeerInfoDrawer] = useState(false);
+  const [messageReactions, setMessageReactions] = useState<Record<string, string[]>>({});
+
+  // --- STATUS NOTE & QUICK NOTES SYSTEM STATE ---
+  const [userStatusNote, setUserStatusNote] = useState<string>(() => {
+    return localStorage.getItem('reflect_status_note') || 'Studying & reflecting 🌱';
+  });
+  const [showStatusNoteModal, setShowStatusNoteModal] = useState(false);
+  const [statusNoteInput, setStatusNoteInput] = useState('');
+
+  const [quickNotes, setQuickNotes] = useState<{ id: string; title: string; content: string; category: string; color: string; date: string; pinned: boolean }[]>(() => {
+    try {
+      const saved = localStorage.getItem('reflect_quick_notes');
+      return saved ? JSON.parse(saved) : [
+        {
+          id: 'note_1',
+          title: 'Compiler Lab Key Formulas 💻',
+          content: 'LR(1) parsing table construction: set of items with lookahead symbols. Handle shift/reduce conflicts cleanly!',
+          category: 'Academic',
+          color: 'violet',
+          date: new Date().toLocaleDateString([], { month: 'short', day: 'numeric' }),
+          pinned: true
+        },
+        {
+          id: 'note_2',
+          title: 'Daily Reflection Checklist 📝',
+          content: '1. Complete core Pomodoro study blocks\n2. Reflect on 2 strengths & 1 area for growth\n3. Log evening score in DayScore',
+          category: 'Focus',
+          color: 'emerald',
+          date: new Date().toLocaleDateString([], { month: 'short', day: 'numeric' }),
+          pinned: false
+        }
+      ];
+    } catch (e) {
+      return [];
+    }
+  });
+  const [showQuickNotesModal, setShowQuickNotesModal] = useState(false);
+  const [newNoteTitle, setNewNoteTitle] = useState('');
+  const [newNoteContent, setNewNoteContent] = useState('');
+  const [newNoteCategory, setNewNoteCategory] = useState('Academic');
+  const [newNoteColor, setNewNoteColor] = useState('violet');
+  const [noteCategoryFilter, setNoteCategoryFilter] = useState('All');
+
+  // --- SPECIAL ANIMATED TROPHY SHOWCASE STATE ---
+  const [selectedTrophyId, setSelectedTrophyId] = useState<string>('gold_champion');
+  const [trophyInspectModal, setTrophyInspectModal] = useState<any | null>(null);
+
+  const handleSaveStatusNote = (noteText: string) => {
+    const trimmed = noteText.trim();
+    if (!trimmed) return;
+    setUserStatusNote(trimmed);
+    localStorage.setItem('reflect_status_note', trimmed);
+    setShowStatusNoteModal(false);
+    showToast('✨ Status note updated on your profile!', 'success');
+  };
+
+  const handleAddQuickNote = () => {
+    if (!newNoteContent.trim() && !newNoteTitle.trim()) {
+      showToast('Please enter a note title or content', 'info');
+      return;
+    }
+    const newNote = {
+      id: 'note_' + Date.now(),
+      title: newNoteTitle.trim() || 'Untitled Note',
+      content: newNoteContent.trim(),
+      category: newNoteCategory,
+      color: newNoteColor,
+      date: new Date().toLocaleDateString([], { month: 'short', day: 'numeric' }),
+      pinned: false,
+    };
+    const updated = [newNote, ...quickNotes];
+    setQuickNotes(updated);
+    localStorage.setItem('reflect_quick_notes', JSON.stringify(updated));
+    setNewNoteTitle('');
+    setNewNoteContent('');
+    showToast('📌 Quick note saved successfully!', 'success');
+  };
+
+  const handleDeleteQuickNote = (id: string) => {
+    const updated = quickNotes.filter(n => n.id !== id);
+    setQuickNotes(updated);
+    localStorage.setItem('reflect_quick_notes', JSON.stringify(updated));
+    showToast('Note deleted', 'info');
+  };
+
+  const handleTogglePinQuickNote = (id: string) => {
+    const updated = quickNotes.map(n => n.id === id ? { ...n, pinned: !n.pinned } : n);
+    setQuickNotes(updated);
+    localStorage.setItem('reflect_quick_notes', JSON.stringify(updated));
+  };
+
+  // --- CHAT VOICE NOTE RECORDING & PLAYBACK STATE ---
+  const [isRecordingVoiceNote, setIsRecordingVoiceNote] = useState(false);
+  const [voiceNoteDuration, setVoiceNoteDuration] = useState(0);
+  const chatVoiceTimerRef = useRef<any>(null);
+  const chatMediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const chatAudioChunksRef = useRef<Blob[]>([]);
+
+  // Audio Playback state for voice messages
+  const [playingMsgId, setPlayingMsgId] = useState<string | null>(null);
+  const [playingMsgProgress, setPlayingMsgProgress] = useState<Record<string, number>>({});
+  const chatAudioPlayerRef = useRef<HTMLAudioElement | null>(null);
+
+  const generateVoiceToneBlob = (durationSec: number): string => {
+    try {
+      const sampleRate = 22050;
+      const dur = Math.max(1, durationSec);
+      const numSamples = sampleRate * dur;
+      const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate });
+      const buffer = audioContext.createBuffer(1, numSamples, sampleRate);
+      const data = buffer.getChannelData(0);
+      for (let i = 0; i < numSamples; i++) {
+        const t = i / sampleRate;
+        const freq = 260 + Math.sin(t * 4) * 40 + Math.sin(t * 10) * 20;
+        const envelope = Math.sin(Math.PI * (i / numSamples));
+        data[i] = Math.sin(2 * Math.PI * freq * t) * 0.15 * envelope;
+      }
+      
+      const numChannels = 1;
+      const format = 1; // PCM
+      const bitDepth = 16;
+      const dataSize = data.length * 2;
+      const arrayBuffer = new ArrayBuffer(44 + dataSize);
+      const view = new DataView(arrayBuffer);
+
+      const writeString = (offset: number, str: string) => {
+        for (let j = 0; j < str.length; j++) {
+          view.setUint8(offset + j, str.charCodeAt(j));
+        }
+      };
+
+      writeString(0, 'RIFF');
+      view.setUint32(4, 36 + dataSize, true);
+      writeString(8, 'WAVE');
+      writeString(12, 'fmt ');
+      view.setUint32(16, 16, true);
+      view.setUint16(20, format, true);
+      view.setUint16(22, numChannels, true);
+      view.setUint32(24, sampleRate, true);
+      view.setUint32(28, sampleRate * numChannels * (bitDepth / 8), true);
+      view.setUint16(32, numChannels * (bitDepth / 8), true);
+      view.setUint16(34, bitDepth, true);
+      writeString(36, 'data');
+      view.setUint32(40, dataSize, true);
+
+      let offset = 44;
+      for (let k = 0; k < data.length; k++) {
+        const s = Math.max(-1, Math.min(1, data[k]));
+        view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+        offset += 2;
+      }
+
+      const blob = new Blob([arrayBuffer], { type: 'audio/wav' });
+      return URL.createObjectURL(blob);
+    } catch (err) {
+      console.error('Failed to create voice blob:', err);
+      return '';
+    }
+  };
+
+  const startVoiceNoteRecording = async () => {
+    setIsRecordingVoiceNote(true);
+    setVoiceNoteDuration(0);
+    chatAudioChunksRef.current = [];
+
+    if (chatVoiceTimerRef.current) clearInterval(chatVoiceTimerRef.current);
+    chatVoiceTimerRef.current = setInterval(() => {
+      setVoiceNoteDuration(prev => prev + 1);
+    }, 1000);
+
+    try {
+      if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        const mediaRecorder = new MediaRecorder(stream);
+        chatMediaRecorderRef.current = mediaRecorder;
+        mediaRecorder.ondataavailable = (e) => {
+          if (e.data && e.data.size > 0) {
+            chatAudioChunksRef.current.push(e.data);
+          }
+        };
+        mediaRecorder.start();
+      }
+    } catch (err) {
+      console.log('Mic recording fallbacks to synth audio:', err);
+    }
+  };
+
+  const cancelVoiceNoteRecording = () => {
+    if (chatVoiceTimerRef.current) clearInterval(chatVoiceTimerRef.current);
+    if (chatMediaRecorderRef.current && chatMediaRecorderRef.current.state !== 'inactive') {
+      try {
+        chatMediaRecorderRef.current.stop();
+        chatMediaRecorderRef.current.stream.getTracks().forEach(t => t.stop());
+      } catch (e) {}
+    }
+    chatMediaRecorderRef.current = null;
+    chatAudioChunksRef.current = [];
+    setIsRecordingVoiceNote(false);
+    setVoiceNoteDuration(0);
+  };
+
+  const finishAndSendVoiceNote = () => {
+    if (chatVoiceTimerRef.current) clearInterval(chatVoiceTimerRef.current);
+    const duration = Math.max(1, voiceNoteDuration);
+
+    if (chatMediaRecorderRef.current && chatMediaRecorderRef.current.state !== 'inactive') {
+      try {
+        chatMediaRecorderRef.current.stop();
+        chatMediaRecorderRef.current.stream.getTracks().forEach(t => t.stop());
+      } catch (e) {}
+    }
+
+    setTimeout(() => {
+      let audioUrl = '';
+      if (chatAudioChunksRef.current.length > 0) {
+        const blob = new Blob(chatAudioChunksRef.current, { type: 'audio/webm' });
+        audioUrl = URL.createObjectURL(blob);
+      } else {
+        audioUrl = generateVoiceToneBlob(duration);
+      }
+
+      const mins = Math.floor(duration / 60);
+      const secs = duration % 60;
+      const formattedDur = `${mins}:${secs < 10 ? '0' : ''}${secs}`;
+      const voiceText = `🎙️ Voice Note (${formattedDur})`;
+
+      handleSendChatMessage(voiceText, audioUrl, duration);
+
+      setIsRecordingVoiceNote(false);
+      setVoiceNoteDuration(0);
+      chatAudioChunksRef.current = [];
+      chatMediaRecorderRef.current = null;
+      showToast(`Voice note (${formattedDur}) sent!`, 'success');
+    }, 100);
+  };
+
+  const togglePlayVoiceMessage = (msgId: string, audioUrl?: string, duration: number = 5) => {
+    if (playingMsgId === msgId) {
+      if (chatAudioPlayerRef.current) {
+        chatAudioPlayerRef.current.pause();
+      }
+      setPlayingMsgId(null);
+      return;
+    }
+
+    if (chatAudioPlayerRef.current) {
+      chatAudioPlayerRef.current.pause();
+    }
+
+    const src = audioUrl || generateVoiceToneBlob(duration);
+    const audio = new Audio(src);
+    chatAudioPlayerRef.current = audio;
+
+    setPlayingMsgId(msgId);
+
+    audio.ontimeupdate = () => {
+      if (audio.duration) {
+        const pct = (audio.currentTime / audio.duration) * 100;
+        setPlayingMsgProgress(prev => ({ ...prev, [msgId]: pct }));
+      }
+    };
+
+    audio.onended = () => {
+      setPlayingMsgId(null);
+      setPlayingMsgProgress(prev => ({ ...prev, [msgId]: 0 }));
+    };
+
+    audio.play().catch(e => {
+      console.log('Audio playback fallback simulation:', e);
+      setPlayingMsgId(msgId);
+      setTimeout(() => {
+        setPlayingMsgId(null);
+      }, duration * 1000);
+    });
+  };
+
+  const handleToggleMessageReaction = (msgId: string, emoji: string) => {
+    setMessageReactions(prev => {
+      const existing = prev[msgId] || [];
+      if (existing.includes(emoji)) {
+        return { ...prev, [msgId]: existing.filter(e => e !== emoji) };
+      } else {
+        return { ...prev, [msgId]: [...existing, emoji] };
+      }
+    });
+  };
   const [isEditingProfile, setIsEditingProfile] = useState(false);
   const [editDisplayName, setEditDisplayName] = useState('');
   const [editBio, setEditBio] = useState('');
   const [editAvatarUrl, setEditAvatarUrl] = useState('');
+  const [editFrame, setEditFrame] = useState<AvatarFrame>('none');
   const [avatarSearchQuery, setAvatarSearchQuery] = useState('');
   const [avatarCategoryFilter, setAvatarCategoryFilter] = useState<string>('All');
+  const avatarFileInputRef = useRef<HTMLInputElement | null>(null);
+
+  const handleFileUploadAvatar = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      showToast('Please select an image file (JPG, PNG, WEBP, GIF)', 'info');
+      return;
+    }
+    if (file.size > 5 * 1024 * 1024) {
+      showToast('Please select an image smaller than 5MB', 'info');
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const result = event.target?.result as string;
+      if (result) {
+        setEditAvatarUrl(result);
+        showToast('📷 Custom photo uploaded from device!', 'success');
+      }
+    };
+    reader.readAsDataURL(file);
+  };
 
   const filteredAvatars = useMemo(() => {
     return CHARACTER_AVATARS.filter(avatar => {
@@ -515,7 +898,7 @@ export default function App() {
   }, [avatarSearchQuery, avatarCategoryFilter]);
 
   const activeAvatarCharacter = useMemo(() => {
-    return CHARACTER_AVATARS.find(a => a.url === editAvatarUrl) || CHARACTER_AVATARS[0];
+    return CHARACTER_AVATARS.find(a => a.url === editAvatarUrl);
   }, [editAvatarUrl]);
   const chatEndRef = useRef<HTMLDivElement | null>(null);
 
@@ -557,14 +940,253 @@ export default function App() {
   const [newTodoText, setNewTodoText] = useState('');
   const [newTodoCategory, setNewTodoCategory] = useState('Academic');
   const [isGeneratingTodos, setIsGeneratingTodos] = useState(false);
+  const [showDeleteAccountModal, setShowDeleteAccountModal] = useState(false);
+  const [deleteConfirmInput, setDeleteConfirmInput] = useState('');
+  const [isDeletingAccount, setIsDeletingAccount] = useState(false);
 
   useEffect(() => {
     try {
+      const emailKey = currentUser?.email || localStorage.getItem('reflect_auth_email') || 'guest';
+      localStorage.setItem(`babu_todos_${emailKey}`, JSON.stringify(todos));
       localStorage.setItem('babu_todos', JSON.stringify(todos));
     } catch (e) {
       console.error(e);
     }
-  }, [todos]);
+  }, [todos, currentUser?.email]);
+
+  // Auto-persist user profile and progress to local device storage whenever currentUser updates
+  useEffect(() => {
+    if (currentUser?.email) {
+      try {
+        localStorage.setItem('reflect_auth_email', currentUser.email);
+        localStorage.setItem(`reflect_cached_user_${currentUser.email}`, JSON.stringify(currentUser));
+      } catch (e) {
+        console.error('Error auto-saving user profile to device storage:', e);
+      }
+    }
+  }, [currentUser]);
+
+  // Auto-persist journals to local device storage
+  useEffect(() => {
+    try {
+      const emailKey = currentUser?.email || localStorage.getItem('reflect_auth_email') || 'guest';
+      localStorage.setItem(`reflect_journals_${emailKey}`, JSON.stringify(journals));
+    } catch (e) {
+      console.error('Error auto-saving journals to local storage:', e);
+    }
+  }, [journals, currentUser?.email]);
+
+  // Auto-persist study sessions to local device storage
+  useEffect(() => {
+    try {
+      const emailKey = currentUser?.email || localStorage.getItem('reflect_auth_email') || 'guest';
+      localStorage.setItem(`reflect_study_${emailKey}`, JSON.stringify(studySessions));
+    } catch (e) {
+      console.error('Error auto-saving study sessions to local storage:', e);
+    }
+  }, [studySessions, currentUser?.email]);
+
+  // Auto-persist quick notes to local device storage
+  useEffect(() => {
+    try {
+      const emailKey = currentUser?.email || localStorage.getItem('reflect_auth_email') || 'guest';
+      localStorage.setItem(`reflect_quick_notes_${emailKey}`, JSON.stringify(quickNotes));
+      localStorage.setItem('reflect_quick_notes', JSON.stringify(quickNotes));
+    } catch (e) {
+      console.error('Error auto-saving quick notes to local storage:', e);
+    }
+  }, [quickNotes, currentUser?.email]);
+
+  // Auto-persist friends list to local device storage
+  useEffect(() => {
+    try {
+      const emailKey = currentUser?.email || localStorage.getItem('reflect_auth_email') || 'guest';
+      localStorage.setItem(`reflect_friends_${emailKey}`, JSON.stringify(friendsList));
+    } catch (e) {
+      console.error('Error auto-saving friends list to local storage:', e);
+    }
+  }, [friendsList, currentUser?.email]);
+
+  // Auto-persist chat rooms to local device storage
+  useEffect(() => {
+    try {
+      const emailKey = currentUser?.email || localStorage.getItem('reflect_auth_email') || 'guest';
+      localStorage.setItem(`reflect_chat_rooms_${emailKey}`, JSON.stringify(chatRooms));
+    } catch (e) {
+      console.error('Error auto-saving chat rooms to local storage:', e);
+    }
+  }, [chatRooms, currentUser?.email]);
+
+  // Auto-persist feed posts to local device storage
+  useEffect(() => {
+    if (posts.length > 0) {
+      try {
+        localStorage.setItem('reflect_posts_feed', JSON.stringify(posts));
+      } catch (e) {
+        console.error('Error auto-saving posts feed to local storage:', e);
+      }
+    }
+  }, [posts]);
+
+  // --- MANUAL DEVICE LOCAL STORAGE FORCE SYNC ---
+  const handleForceSyncDeviceStorage = () => {
+    const emailKey = currentUser?.email || localStorage.getItem('reflect_auth_email') || 'guest';
+    try {
+      if (currentUser?.email) {
+        localStorage.setItem('reflect_auth_email', currentUser.email);
+        localStorage.setItem(`reflect_cached_user_${currentUser.email}`, JSON.stringify(currentUser));
+      }
+      localStorage.setItem(`reflect_journals_${emailKey}`, JSON.stringify(journals));
+      localStorage.setItem(`reflect_study_${emailKey}`, JSON.stringify(studySessions));
+      localStorage.setItem(`babu_todos_${emailKey}`, JSON.stringify(todos));
+      localStorage.setItem('babu_todos', JSON.stringify(todos));
+      localStorage.setItem(`reflect_quick_notes_${emailKey}`, JSON.stringify(quickNotes));
+      localStorage.setItem('reflect_quick_notes', JSON.stringify(quickNotes));
+      localStorage.setItem(`reflect_friends_${emailKey}`, JSON.stringify(friendsList));
+      localStorage.setItem(`reflect_chat_rooms_${emailKey}`, JSON.stringify(chatRooms));
+      if (posts.length > 0) {
+        localStorage.setItem('reflect_posts_feed', JSON.stringify(posts));
+      }
+      showToast('⚡ All user profile, stats, streak, badges & progress saved to device storage!', 'success');
+      setConfettiActive(true);
+      setTimeout(() => setConfettiActive(false), 2500);
+    } catch (e) {
+      console.error('Error forcing device storage save:', e);
+      showToast('Error saving to device local storage', 'info');
+    }
+  };
+
+  // --- DIRECT DEVICE FOLDER STORAGE HANDLERS ---
+  const handleSaveToDeviceFolder = async () => {
+    const exportData = {
+      version: '1.0',
+      app: 'DayScore AI Student Hub',
+      savedAt: new Date().toISOString(),
+      userEmail: currentUser?.email || 'guest',
+      userProfile: currentUser || null,
+      journals,
+      studySessions,
+      todos,
+      quickNotes,
+      userStatusNote,
+    };
+    const jsonString = JSON.stringify(exportData, null, 2);
+    const fileName = `DayScore_UserData_Backup_${new Date().toISOString().split('T')[0]}.json`;
+
+    // Try modern File System Access API (opens direct device folder file save picker)
+    if ('showSaveFilePicker' in window) {
+      try {
+        const handle = await (window as any).showSaveFilePicker({
+          suggestedName: fileName,
+          types: [{
+            description: 'DayScore User Data Backup (.json)',
+            accept: { 'application/json': ['.json'] },
+          }],
+        });
+        const writable = await handle.createWritable();
+        await writable.write(jsonString);
+        await writable.close();
+        showToast('💾 Successfully saved user data directly to your device folder!', 'success');
+        setConfettiActive(true);
+        setTimeout(() => setConfettiActive(false), 3000);
+        return;
+      } catch (err: any) {
+        if (err.name === 'AbortError') return; // User cancelled save dialog
+        console.log('File System Access API fallback:', err);
+      }
+    }
+
+    // Fallback standard HTML5 file download to user's local device folder
+    const blob = new Blob([jsonString], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const downloadAnchor = document.createElement('a');
+    downloadAnchor.setAttribute('href', url);
+    downloadAnchor.setAttribute('download', fileName);
+    document.body.appendChild(downloadAnchor);
+    downloadAnchor.click();
+    downloadAnchor.remove();
+    URL.revokeObjectURL(url);
+    showToast(`💾 Saved ${fileName} directly to your device folder!`, 'success');
+    setConfettiActive(true);
+    setTimeout(() => setConfettiActive(false), 3000);
+  };
+
+  const handleLoadFromDeviceFolder = (file: File) => {
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+      try {
+        const content = e.target?.result as string;
+        const parsed = JSON.parse(content);
+        if (!parsed) {
+          showToast('Invalid backup file format.', 'info');
+          return;
+        }
+
+        let restoredCount = 0;
+
+        if (Array.isArray(parsed.journals)) {
+          setJournals(parsed.journals);
+          restoredCount += parsed.journals.length;
+          const emailKey = currentUser?.email || localStorage.getItem('reflect_auth_email') || 'guest';
+          localStorage.setItem(`reflect_journals_${emailKey}`, JSON.stringify(parsed.journals));
+        }
+
+        if (Array.isArray(parsed.studySessions)) {
+          setStudySessions(parsed.studySessions);
+          restoredCount += parsed.studySessions.length;
+          const emailKey = currentUser?.email || localStorage.getItem('reflect_auth_email') || 'guest';
+          localStorage.setItem(`reflect_study_${emailKey}`, JSON.stringify(parsed.studySessions));
+        }
+
+        if (Array.isArray(parsed.todos)) {
+          setTodos(parsed.todos);
+          localStorage.setItem('babu_todos', JSON.stringify(parsed.todos));
+          restoredCount += parsed.todos.length;
+        }
+
+        if (Array.isArray(parsed.quickNotes)) {
+          setQuickNotes(parsed.quickNotes);
+          localStorage.setItem('reflect_quick_notes', JSON.stringify(parsed.quickNotes));
+          restoredCount += parsed.quickNotes.length;
+        }
+
+        if (parsed.userStatusNote) {
+          setUserStatusNote(parsed.userStatusNote);
+          localStorage.setItem('reflect_status_note', parsed.userStatusNote);
+        }
+
+        if (parsed.userProfile && !currentUser) {
+          setCurrentUser(parsed.userProfile);
+          localStorage.setItem('reflect_auth_email', parsed.userProfile.email);
+        }
+
+        // If user is logged in, sync restored items with backend server
+        if (currentUser?.email) {
+          try {
+            if (Array.isArray(parsed.journals) && parsed.journals.length > 0) {
+              for (const j of parsed.journals) {
+                await fetch('/api/journals', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json', 'x-auth-email': currentUser.email },
+                  body: JSON.stringify(j),
+                });
+              }
+            }
+          } catch (err) {
+            console.error('Syncing imported journals error:', err);
+          }
+        }
+
+        showToast(`📂 Restored ${restoredCount} entries & items from your device backup!`, 'success');
+        setConfettiActive(true);
+        setTimeout(() => setConfettiActive(false), 4000);
+      } catch (err) {
+        console.error('Failed reading device backup file:', err);
+        showToast('Error parsing file. Please select a valid JSON backup file.', 'info');
+      }
+    };
+    reader.readAsText(file);
+  };
 
   const handleAddTodo = (e: React.FormEvent) => {
     e.preventDefault();
@@ -683,9 +1305,6 @@ export default function App() {
     setConfettiActive(true);
   };
 
-  // --- RECENT COMPILATION & ACTIVE JOURNAL DATE ---
-  const todayDateStr = useMemo(() => new Date().toISOString().split('T')[0], []);
-
   // --- TOAST NOTIFICATIONS HELPER ---
   const showToast = (message: string, type: 'success' | 'info' | 'badge' = 'info') => {
     const id = Math.random().toString();
@@ -700,16 +1319,31 @@ export default function App() {
     // Check local storage for persistent auth
     const savedEmail = localStorage.getItem('reflect_auth_email');
     if (savedEmail) {
+      // Restore cached user profile instantly if available
+      try {
+        const cachedUser = localStorage.getItem(`reflect_cached_user_${savedEmail}`);
+        if (cachedUser) {
+          const parsed = JSON.parse(cachedUser);
+          if (parsed && parsed.email) {
+            setCurrentUser(parsed);
+            fetchInitialData(parsed.email);
+          }
+        }
+      } catch (e) {
+        console.error('Failed restoring cached user:', e);
+      }
+
       fetch('/api/user/profile', {
         headers: { 'x-auth-email': savedEmail }
       })
       .then(res => {
         if (res.ok) return res.json();
-        throw new Error();
+        throw new Error('Profile fetch failed');
       })
       .then(data => {
         if (data.user) {
           setCurrentUser(data.user);
+          localStorage.setItem(`reflect_cached_user_${data.user.email}`, JSON.stringify(data.user));
           if (data.user.theme === 'dark') {
             setIsThemeDark(true);
             document.documentElement.classList.add('dark');
@@ -719,12 +1353,10 @@ export default function App() {
           }
           showToast(`Welcome back, ${data.user.displayName}! ✨`, 'success');
           fetchInitialData(data.user.email);
-        } else {
-          localStorage.removeItem('reflect_auth_email');
         }
       })
-      .catch(() => {
-        localStorage.removeItem('reflect_auth_email');
+      .catch(err => {
+        console.warn('Backend connection warning during profile fetch:', err);
       });
     }
 
@@ -745,9 +1377,11 @@ export default function App() {
     if (timerIsRunning && timerSeconds > 0) {
       interval = setInterval(() => {
         setTimerSeconds(prev => prev - 1);
+        setFocusedSecondsInCurrentSession(prev => prev + 1);
       }, 1000);
     } else if (timerIsRunning && timerSeconds === 0) {
       setTimerIsRunning(false);
+      setHasCompletedFocusPeriod(true);
       setShowTimerFinishModal(true);
       showToast('🎉 Focus milestone achieved! Study session completed.', 'success');
       setConfettiActive(true);
@@ -769,34 +1403,80 @@ export default function App() {
     }
   }, [activeRoomId]);
 
-  // Scroll to chat bottom
+  // Auto scroll down chat view when messages arrive (especially after bot answers)
   useEffect(() => {
-    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [chatMessages]);
+    if (chatMessages.length > 0) {
+      chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [chatMessages.length]);
+
+  // Multi-day journal text synchronization with selectedDate
+  useEffect(() => {
+    if (journals) {
+      const entry = journals.find(j => j.date === selectedDate);
+      setJournalText(entry ? entry.text : '');
+    }
+  }, [selectedDate, journals]);
 
   // Background autosave checker
   useEffect(() => {
     if (currentUser && currentTab === 'home' && journalText.trim()) {
       const delayDebounce = setTimeout(() => {
-        autosaveJournal(journalText);
+        autosaveJournal(journalText, selectedDate);
       }, 1500);
       return () => clearTimeout(delayDebounce);
     }
-  }, [journalText]);
+  }, [journalText, selectedDate]);
 
   // --- API SERVICE CALLS ---
-  const handleGoogleLogin = async (email: string, displayName: string, photoUrl: string) => {
+  const handleGoogleLogin = async (email: string, displayName: string, photoUrl: string, passInput?: string) => {
+    if (!email || !email.trim()) {
+      showToast('Please enter your Google account email', 'info');
+      return;
+    }
+    const cleanEmail = email.trim().toLowerCase();
+    const cleanName = displayName.trim() || cleanEmail.split('@')[0];
+    const finalPhoto = photoUrl || `https://api.dicebear.com/7.x/adventurer/svg?seed=${cleanEmail}`;
+    const pwd = passInput !== undefined ? passInput : googlePasswordInput;
+
+    if (!pwd || !pwd.trim()) {
+      showToast('Please enter your password to proceed.', 'info');
+      return;
+    }
+
+    if (googleAccountIsRegistered === false && pwd.length < 6) {
+      showToast('Please set a strong password with at least 6 characters.', 'info');
+      return;
+    }
+
     setAuthLoading(true);
     try {
       const res = await fetch('/api/auth/google', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, displayName, photoUrl }),
+        body: JSON.stringify({ email: cleanEmail, displayName: cleanName, photoUrl: finalPhoto, password: pwd }),
       });
       const data = await res.json();
       if (res.ok) {
+        // Save account to device saved accounts
+        setSavedGoogleAccounts(prev => {
+          const exists = prev.some(acc => acc.email.toLowerCase() === cleanEmail);
+          const newAcc = { email: cleanEmail, displayName: cleanName, photoUrl: finalPhoto };
+          const updated = exists
+            ? prev.map(acc => acc.email.toLowerCase() === cleanEmail ? newAcc : acc)
+            : [newAcc, ...prev];
+          localStorage.setItem('babu_saved_google_accounts', JSON.stringify(updated));
+          return updated;
+        });
+
         onAuthSuccess(data.user, data.token);
         setShowGoogleModal(false);
+        setIsEnteringNewAccount(false);
+        setCustomGoogleEmail('');
+        setCustomGoogleName('');
+        setSelectedGoogleAccount(null);
+        setGooglePasswordInput('');
+        setGoogleAccountIsRegistered(null);
       } else {
         showToast(data.error || 'Google Sign-In failed', 'info');
       }
@@ -806,6 +1486,64 @@ export default function App() {
     } finally {
       setAuthLoading(false);
     }
+  };
+
+  const handleSelectGoogleAccountForAuth = async (email: string, displayName: string, photoUrl: string) => {
+    if (!email || !email.trim()) {
+      showToast('Please enter a valid Google email address.', 'info');
+      return;
+    }
+    const cleanEmail = email.trim().toLowerCase();
+    const cleanName = displayName.trim() || cleanEmail.split('@')[0];
+    const finalPhoto = photoUrl || `https://api.dicebear.com/7.x/adventurer/svg?seed=${cleanEmail}`;
+
+    setSelectedGoogleAccount({ email: cleanEmail, displayName: cleanName, photoUrl: finalPhoto });
+    setGooglePasswordInput('');
+    setAuthLoading(true);
+
+    try {
+      const res = await fetch('/api/auth/check', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: cleanEmail }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setGoogleAccountIsRegistered(!!data.exists);
+      } else {
+        setGoogleAccountIsRegistered(false);
+      }
+    } catch (err) {
+      console.error(err);
+      setGoogleAccountIsRegistered(false);
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
+  const handleRemoveSavedAccount = (emailToRemove: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setSavedGoogleAccounts(prev => {
+      const updated = prev.filter(acc => acc.email.toLowerCase() !== emailToRemove.toLowerCase());
+      localStorage.setItem('babu_saved_google_accounts', JSON.stringify(updated));
+      return updated;
+    });
+    if (selectedGoogleAccount?.email.toLowerCase() === emailToRemove.toLowerCase()) {
+      setSelectedGoogleAccount(null);
+      setGooglePasswordInput('');
+    }
+    showToast('Account removed from this device', 'info');
+  };
+
+  const calculatePasswordStrength = (pass: string) => {
+    if (!pass) return { score: 0, label: 'Password required', color: 'bg-slate-200 dark:bg-slate-700' };
+    if (pass.length < 6) return { score: 1, label: 'Weak (min 6 characters)', color: 'bg-rose-500' };
+    let points = 1;
+    if (pass.length >= 8) points++;
+    if (/[0-9]/.test(pass)) points++;
+    if (/[A-Z]/.test(pass) || /[^A-Za-z0-9]/.test(pass)) points++;
+    if (points <= 2) return { score: 2, label: 'Medium security', color: 'bg-amber-500' };
+    return { score: 3, label: 'Strong & Secured password 💪', color: 'bg-emerald-500' };
   };
 
   const handleDirectGoogleSignIn = async (email?: string) => {
@@ -840,6 +1578,7 @@ export default function App() {
   const onAuthSuccess = (user: Profile, token?: string) => {
     setCurrentUser(user);
     localStorage.setItem('reflect_auth_email', user.email);
+    localStorage.setItem(`reflect_cached_user_${user.email}`, JSON.stringify(user));
     if (token) {
       localStorage.setItem('reflect_auth_token', token);
     }
@@ -988,19 +1727,125 @@ export default function App() {
     }
   };
 
-  const fetchInitialData = (email: string) => {
-    const headers = { 'x-auth-email': email };
-    
-    // Parallel load initial state
-    fetch('/api/journals', { headers }).then(r => r.json()).then(data => {
-      setJournals(data.journals || []);
-      const todayJ = (data.journals || []).find((j: any) => j.date === todayDateStr);
-      if (todayJ) setJournalText(todayJ.text);
-    });
+  const handleDeleteAccount = async () => {
+    if (!currentUser) return;
+    setIsDeletingAccount(true);
+    try {
+      const email = currentUser.email;
+      const headers: Record<string, string> = { 'x-auth-email': email };
+      const savedToken = localStorage.getItem('reflect_auth_token');
+      if (savedToken) headers['x-auth-token'] = savedToken;
 
-    fetch('/api/study/sessions', { headers }).then(r => r.json()).then(data => {
-      setStudySessions(data.studySessions || []);
-    });
+      const res = await fetch('/api/user/profile', {
+        method: 'DELETE',
+        headers
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        showToast('Your account and all associated data have been permanently deleted.', 'info');
+        localStorage.removeItem('reflect_auth_email');
+        localStorage.removeItem('reflect_auth_token');
+        localStorage.removeItem(`reflect_cached_user_${email}`);
+        localStorage.removeItem(`reflect_journals_${email}`);
+        localStorage.removeItem(`reflect_study_${email}`);
+        localStorage.removeItem(`babu_todos`);
+        
+        setShowDeleteAccountModal(false);
+        setDeleteConfirmInput('');
+        setCurrentUser(null);
+        setJournals([]);
+        setStudySessions([]);
+        setPosts([]);
+        setChatRooms([]);
+        setLeaderboardRankings([]);
+        setDriveConnected(false);
+        setDriveStatusLoaded(false);
+      } else {
+        showToast(data.error || 'Failed to delete account.', 'info');
+      }
+    } catch (err) {
+      console.error(err);
+      showToast('Error connecting to server to delete account.', 'info');
+    } finally {
+      setIsDeletingAccount(false);
+    }
+  };
+
+  const fetchInitialData = (email: string) => {
+    const headers: Record<string, string> = { 'x-auth-email': email };
+    const savedToken = localStorage.getItem('reflect_auth_token');
+    if (savedToken) headers['x-auth-token'] = savedToken;
+    
+    // Instant restore from local device storage cache if present (Game-style instant load)
+    try {
+      const cachedJ = localStorage.getItem(`reflect_journals_${email}`);
+      if (cachedJ) {
+        const parsed = JSON.parse(cachedJ);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          setJournals(parsed);
+          const todayJ = parsed.find((j: any) => j.date === todayDateStr);
+          if (todayJ && todayJ.text) setJournalText(todayJ.text);
+        }
+      }
+      const cachedS = localStorage.getItem(`reflect_study_${email}`);
+      if (cachedS) {
+        const parsed = JSON.parse(cachedS);
+        if (Array.isArray(parsed) && parsed.length > 0) setStudySessions(parsed);
+      }
+      const cachedTodos = localStorage.getItem(`babu_todos_${email}`);
+      if (cachedTodos) {
+        const parsed = JSON.parse(cachedTodos);
+        if (Array.isArray(parsed) && parsed.length > 0) setTodos(parsed);
+      }
+      const cachedNotes = localStorage.getItem(`reflect_quick_notes_${email}`);
+      if (cachedNotes) {
+        const parsed = JSON.parse(cachedNotes);
+        if (Array.isArray(parsed) && parsed.length > 0) setQuickNotes(parsed);
+      }
+      const cachedFriends = localStorage.getItem(`reflect_friends_${email}`);
+      if (cachedFriends) {
+        const parsed = JSON.parse(cachedFriends);
+        if (Array.isArray(parsed) && parsed.length > 0) setFriendsList(parsed);
+      }
+      const cachedRooms = localStorage.getItem(`reflect_chat_rooms_${email}`);
+      if (cachedRooms) {
+        const parsed = JSON.parse(cachedRooms);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          setChatRooms(parsed);
+          if (!activeRoomId) setActiveRoomId(parsed[0].id);
+        }
+      }
+      const cachedPosts = localStorage.getItem('reflect_posts_feed');
+      if (cachedPosts) {
+        const parsed = JSON.parse(cachedPosts);
+        if (Array.isArray(parsed) && parsed.length > 0) setPosts(parsed);
+      }
+    } catch (e) {
+      console.error('Local cache read warning:', e);
+    }
+
+    // Server load and cache update
+    fetch('/api/journals', { headers })
+      .then(r => r.json())
+      .then(data => {
+        if (data.journals && Array.isArray(data.journals)) {
+          setJournals(data.journals);
+          localStorage.setItem(`reflect_journals_${email}`, JSON.stringify(data.journals));
+          const todayJ = data.journals.find((j: any) => j.date === todayDateStr);
+          if (todayJ && todayJ.text) setJournalText(todayJ.text);
+        }
+      })
+      .catch(err => console.error('Failed to load journals from server:', err));
+
+    fetch('/api/study/sessions', { headers })
+      .then(r => r.json())
+      .then(data => {
+        if (data.studySessions && Array.isArray(data.studySessions)) {
+          setStudySessions(data.studySessions);
+          localStorage.setItem(`reflect_study_${email}`, JSON.stringify(data.studySessions));
+        }
+      })
+      .catch(err => console.error('Failed to load study sessions from server:', err));
 
     fetch('/api/google-drive/status', { headers }).then(r => r.json()).then(data => {
       setDriveConnected(data.connected);
@@ -1027,7 +1872,15 @@ export default function App() {
     if (!email) return;
     fetch('/api/chat/rooms', { headers: { 'x-auth-email': email } })
       .then(r => r.json())
-      .then(data => setChatRooms(data.rooms || []));
+      .then(data => {
+        const rooms = data.rooms || [];
+        setChatRooms(rooms);
+        if (rooms.length > 0) {
+          const firstRoom = rooms[0];
+          setActiveRoomId(firstRoom.id);
+          fetchMessages(firstRoom.id, email);
+        }
+      });
   };
 
   const fetchMessages = (roomId: string, email = currentUser?.email) => {
@@ -1060,7 +1913,12 @@ export default function App() {
     if (!email) return;
     fetch(`/api/leaderboard?scope=${scope}&period=${period}`, { headers: { 'x-auth-email': email } })
       .then(r => r.json())
-      .then(data => setLeaderboardRankings(data.rankings || []));
+      .then(data => {
+        const rankings = (data.rankings || []).filter(
+          (r: any) => r.email !== 'dayscore_ai@reflect.edu' && r.username !== 'dayscore_ai'
+        );
+        setLeaderboardRankings(rankings);
+      });
   };
 
   const fetchAnalytics = (email = currentUser?.email) => {
@@ -1074,7 +1932,7 @@ export default function App() {
 
   // --- ACTIONS ---
 
-  const autosaveJournal = async (text: string) => {
+  const autosaveJournal = async (text: string, dateToUse: string = selectedDate) => {
     if (!currentUser) return;
     setSaveStatus('saving');
     try {
@@ -1086,7 +1944,7 @@ export default function App() {
         },
         body: JSON.stringify({
           text,
-          date: todayDateStr,
+          date: dateToUse,
           isDraft: true,
         }),
       });
@@ -1094,7 +1952,7 @@ export default function App() {
         setSaveStatus('saved');
         const d = await res.json();
         setJournals(prev => {
-          const index = prev.findIndex(j => j.date === todayDateStr);
+          const index = prev.findIndex(j => j.date === dateToUse);
           if (index > -1) {
             const updated = [...prev];
             updated[index] = d.journal;
@@ -1110,7 +1968,7 @@ export default function App() {
     }
   };
 
-  const triggerEvaluation = async () => {
+  const triggerEvaluation = async (dateToUse: string = selectedDate) => {
     if (!currentUser) return;
     if (!journalText.trim()) {
       showToast('Please type a reflection entry first!', 'info');
@@ -1119,16 +1977,13 @@ export default function App() {
 
     setLoadingEvaluate(true);
     try {
-      // First, make sure the draft is saved
-      await autosaveJournal(journalText);
-
       const res = await fetch('/api/journals/evaluate', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'x-auth-email': currentUser.email,
         },
-        body: JSON.stringify({ date: todayDateStr }),
+        body: JSON.stringify({ date: dateToUse, text: journalText }),
       });
       const data = await res.json();
       if (res.ok) {
@@ -1138,7 +1993,15 @@ export default function App() {
         setTimeout(() => setConfettiActive(false), 5000);
         
         // Refresh local data state
-        setJournals(prev => prev.map(j => j.date === todayDateStr ? data.journal : j));
+        setJournals(prev => {
+          const idx = prev.findIndex(j => j.date === dateToUse);
+          if (idx > -1) {
+            const copy = [...prev];
+            copy[idx] = data.journal;
+            return copy;
+          }
+          return [...prev, data.journal];
+        });
         setCurrentUser(data.user);
         
         showToast(`AI analysis complete! Score: ${data.journal.score}`, 'success');
@@ -1167,7 +2030,7 @@ export default function App() {
     }
   };
 
-  const handleCreateCustomPost = async (text: string) => {
+  const handleCreateCustomPost = async (text: string, audience: 'public' | 'friends' = postAudience) => {
     if (!currentUser || !text.trim()) return;
     try {
       const res = await fetch('/api/social/posts', {
@@ -1176,12 +2039,13 @@ export default function App() {
           'Content-Type': 'application/json',
           'x-auth-email': currentUser.email,
         },
-        body: JSON.stringify({ content: text }),
+        body: JSON.stringify({ content: text, audience }),
       });
       const data = await res.json();
       if (res.ok) {
         setPosts(prev => [data.post, ...prev]);
-        showToast('Shared successfully to student feed!', 'success');
+        setCustomPostText('');
+        showToast(`Shared to ${audience === 'friends' ? 'Friends Feed 👥' : 'Public Feed 🌐'}!`, 'success');
       }
     } catch (err) {
       console.error(err);
@@ -1189,16 +2053,14 @@ export default function App() {
   };
 
   const handleDeletePost = async (postId: string) => {
+    setPosts(prev => prev.filter(p => p.id !== postId));
+    showToast('Deleted feed update', 'success');
     if (!currentUser) return;
     try {
-      const res = await fetch(`/api/social/posts/${postId}`, {
+      await fetch(`/api/social/posts/${postId}`, {
         method: 'DELETE',
         headers: { 'x-auth-email': currentUser.email },
       });
-      if (res.ok) {
-        setPosts(prev => prev.filter(p => p.id !== postId));
-        showToast('Deleted feed update', 'success');
-      }
     } catch (err) {
       console.error(err);
     }
@@ -1358,10 +2220,11 @@ export default function App() {
     }
   };
 
-  const handleSendChatMessage = async () => {
-    if (!currentUser || !chatInputText.trim() || !activeRoomId) return;
-    const text = chatInputText;
-    setChatInputText('');
+  const handleSendChatMessage = async (textOverride?: string, audioUrl?: string, audioDuration?: number) => {
+    if (!currentUser || !activeRoomId) return;
+    const text = textOverride !== undefined ? textOverride : chatInputText;
+    if (!text.trim()) return;
+    if (textOverride === undefined) setChatInputText('');
     
     // Optimistic message append
     const tempMsg = {
@@ -1370,7 +2233,9 @@ export default function App() {
       text,
       timestamp: new Date().toISOString(),
       reactions: {},
-      read: false
+      read: false,
+      audioUrl,
+      audioDuration
     };
     setChatMessages(prev => [...prev, tempMsg]);
 
@@ -1381,7 +2246,7 @@ export default function App() {
           'Content-Type': 'application/json',
           'x-auth-email': currentUser.email,
         },
-        body: JSON.stringify({ text }),
+        body: JSON.stringify({ text, audioUrl, audioDuration }),
       });
       const data = await res.json();
       if (res.ok) {
@@ -1436,7 +2301,7 @@ export default function App() {
     }
   };
 
-  const handleUpdateProfile = async (displayName: string, bio: string, avatarUrl: string) => {
+  const handleUpdateProfile = async (displayName: string, bio: string, avatarUrl: string, frame: AvatarFrame = 'none') => {
     if (!currentUser) return;
     try {
       const res = await fetch('/api/user/profile', {
@@ -1445,33 +2310,18 @@ export default function App() {
           'Content-Type': 'application/json',
           'x-auth-email': currentUser.email,
         },
-        body: JSON.stringify({ displayName, bio, avatarUrl }),
+        body: JSON.stringify({ displayName, bio, avatarUrl, frame }),
       });
       const data = await res.json();
       if (res.ok) {
         setCurrentUser(data.user);
-        showToast('Profile updated successfully!', 'success');
+        showToast('Profile and Avatar Frame updated successfully!', 'success');
+      } else {
+        showToast(data.error || 'Failed to update profile', 'info');
       }
     } catch (err) {
       console.error(err);
-    }
-  };
-
-  const handleDeleteAccount = async () => {
-    if (!currentUser) return;
-    if (!confirm('Are you absolutely sure you want to delete your account? This is permanent and deletes all your entries.')) return;
-    
-    try {
-      const res = await fetch('/api/user/profile', {
-        method: 'DELETE',
-        headers: { 'x-auth-email': currentUser.email },
-      });
-      if (res.ok) {
-        handleLogout();
-        showToast('Your account has been deleted.', 'info');
-      }
-    } catch (err) {
-      console.error(err);
+      showToast('Error updating profile', 'info');
     }
   };
 
@@ -1578,8 +2428,6 @@ export default function App() {
   };
 
   const stopAndAnalyzeVoice = async () => {
-    setVoiceStatus('analyzing');
-
     if (voiceTimerIntervalRef.current) {
       clearInterval(voiceTimerIntervalRef.current);
       voiceTimerIntervalRef.current = null;
@@ -1589,63 +2437,27 @@ export default function App() {
       try { speechRecognitionRef.current.stop(); } catch (e) {}
     }
 
-    let finalTranscribedText = '';
-
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
-      await new Promise<void>((resolve) => {
-        if (!mediaRecorderRef.current) return resolve();
-        mediaRecorderRef.current.onstop = () => resolve();
+      try {
         mediaRecorderRef.current.stop();
-      });
-
-      if (mediaRecorderRef.current.stream) {
-        mediaRecorderRef.current.stream.getTracks().forEach(track => track.stop());
-      }
-
-      if (audioChunksRef.current.length > 0) {
-        const audioBlob = new Blob(audioChunksRef.current, { type: mediaRecorderRef.current.mimeType || 'audio/webm' });
-        
-        try {
-          const base64Data = await new Promise<string>((resolve, reject) => {
-            const reader = new FileReader();
-            reader.onloadend = () => resolve(reader.result as string);
-            reader.onerror = reject;
-            reader.readAsDataURL(audioBlob);
-          });
-
-          const res = await fetch('/api/voice-transcribe', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'x-auth-email': currentUser.email,
-            },
-            body: JSON.stringify({
-              audioData: base64Data,
-              mimeType: audioBlob.type,
-            })
-          });
-
-          if (res.ok) {
-            const data = await res.json();
-            if (data.success && data.transcript) {
-              finalTranscribedText = data.transcript;
-            }
-          }
-        } catch (err) {
-          console.error('AI voice transcription error:', err);
+        if (mediaRecorderRef.current.stream) {
+          mediaRecorderRef.current.stream.getTracks().forEach(track => track.stop());
         }
-      }
+      } catch (e) {}
     }
 
-    if (!finalTranscribedText) {
-      if (voiceLiveTranscript.trim()) {
-        finalTranscribedText = voiceLiveTranscript.trim();
-      } else {
-        finalTranscribedText = "Today was a productive day. I completed my core study goals, stayed focused during sessions, and maintained a clean balance between work and rest.";
-      }
-    }
+    setVoiceStatus('idle');
 
-    typeTextIntoJournal(finalTranscribedText);
+    const spokenText = voiceLiveTranscript.trim();
+    if (spokenText) {
+      setJournalText(prev => {
+        const existing = prev.trim();
+        return existing ? `${existing}\n\n${spokenText}` : spokenText;
+      });
+      showToast('🎙️ Voice recorded exactly as spoken!', 'success');
+    } else {
+      showToast('No speech detected. Please speak into your microphone.', 'info');
+    }
   };
 
   const typeTextIntoJournal = (textToType: string) => {
@@ -1687,7 +2499,7 @@ export default function App() {
     setVoiceStatus('recording');
     setVoiceSeconds(0);
     voiceTimerIntervalRef.current = setInterval(() => setVoiceSeconds(s => s + 1), 1000);
-    setVoiceLiveTranscript("Today I focused on my computer science revision and accomplished my key targets...");
+    setVoiceLiveTranscript("");
   };
 
   // --- UTILS & LOOKUPS ---
@@ -1715,6 +2527,11 @@ export default function App() {
   const todayEntry = useMemo(() => {
     return journals.find(j => j.date === todayDateStr);
   }, [journals, todayDateStr]);
+
+  // Selected date entry lookup helper
+  const selectedEntry = useMemo(() => {
+    return journals.find(j => j.date === selectedDate);
+  }, [journals, selectedDate]);
 
   // Handle Light/Dark Theme Switcher
   const toggleTheme = () => {
@@ -1750,56 +2567,257 @@ export default function App() {
             Daily reflection, Pomodoro flow, and peer accountability powered by Google Gemini AI.
           </p>
 
-          <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 p-8 rounded-3xl shadow-xl space-y-6 relative overflow-hidden text-center">
-            <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-indigo-50 dark:bg-indigo-950/40 text-indigo-600 dark:text-indigo-400 text-xs font-semibold">
-              <Shield className="w-3.5 h-3.5" /> Google Single Sign-On
+          <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 p-6 md:p-8 rounded-3xl shadow-xl space-y-5 relative overflow-hidden text-left">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-slate-800">
+              <div className="flex items-center gap-2">
+                <svg className="w-5 h-5" viewBox="0 0 24 24">
+                  <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" />
+                  <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" />
+                  <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z" />
+                  <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z" />
+                </svg>
+                <h2 className="text-xs font-black text-slate-800 dark:text-white font-display uppercase tracking-wider">
+                  Google Account Sign-In
+                </h2>
+              </div>
+              <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-emerald-50 dark:bg-emerald-950/40 text-emerald-600 dark:text-emerald-400 text-[10px] font-extrabold">
+                <Shield className="w-3 h-3" /> Secured
+              </span>
             </div>
 
-            <p 
-              className="text-[10px] text-slate-600 dark:text-slate-400 leading-relaxed font-normal text-center"
-              style={{ marginTop: '-21px', marginBottom: '10px', marginLeft: '0px', marginRight: '0px' }}
-            >
-              Sign in with your Google account to access your daily reflections, study stats, and social classroom.
-            </p>
+            {!selectedGoogleAccount ? (
+              <div className="space-y-4">
+                {/* Saved accounts if available */}
+                {savedGoogleAccounts.length > 0 && !isEnteringNewAccount ? (
+                  <div className="space-y-3">
+                    <p className="text-xs text-slate-500 dark:text-slate-400 font-medium">Select a Google account on this device:</p>
+                    <div className="space-y-2 max-h-52 overflow-y-auto pr-1 custom-scrollbar">
+                      {savedGoogleAccounts.map((acc) => (
+                        <div
+                          key={acc.email}
+                          onClick={() => handleSelectGoogleAccountForAuth(acc.email, acc.displayName, acc.photoUrl)}
+                          className="group relative flex items-center gap-3.5 p-3 hover:bg-slate-50 dark:hover:bg-slate-800/80 rounded-2xl transition-all cursor-pointer border border-slate-100 dark:border-slate-800 hover:border-indigo-200 dark:hover:border-indigo-800 shadow-sm"
+                        >
+                          <img
+                            src={acc.photoUrl}
+                            alt={acc.displayName}
+                            className="w-9 h-9 rounded-full object-cover ring-2 ring-indigo-500/20 shrink-0"
+                          />
+                          <div className="flex-grow min-w-0">
+                            <div className="text-xs font-bold text-slate-900 dark:text-white truncate">
+                              {acc.displayName}
+                            </div>
+                            <div className="text-[11px] text-slate-400 dark:text-slate-500 truncate">
+                              {acc.email}
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={(e) => handleRemoveSavedAccount(acc.email, e)}
+                            className="p-1.5 text-slate-300 hover:text-rose-500 rounded-lg hover:bg-rose-50 dark:hover:bg-rose-950/40 transition-colors"
+                            title="Remove account from device"
+                          >
+                            <X className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
 
-            <button
-              onClick={() => setShowGoogleModal(true)}
-              disabled={authLoading}
-              style={{ marginTop: '40px', marginBottom: '10px' }}
-              className="w-full py-3.5 text-center text-sm font-bold text-slate-800 dark:text-slate-100 bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700 border-2 border-slate-200 dark:border-slate-700 rounded-xl shadow-sm transition-all duration-100 flex items-center justify-center gap-3 cursor-pointer disabled:opacity-50"
-            >
-              {authLoading ? (
-                <span className="h-4 w-4 border-2 border-indigo-600/30 border-t-indigo-600 rounded-full animate-spin"></span>
-              ) : (
-                <svg className="w-5 h-5" viewBox="0 0 24 24">
-                  <path
-                    fill="currentColor"
-                    d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
-                    className="text-[#4285F4]"
-                  />
-                  <path
-                    fill="currentColor"
-                    d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
-                    className="text-[#34A853]"
-                  />
-                  <path
-                    fill="currentColor"
-                    d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"
-                    className="text-[#FBBC05]"
-                  />
-                  <path
-                    fill="currentColor"
-                    d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"
-                    className="text-[#EA4335]"
-                  />
-                </svg>
-              )}
-              {authLoading ? 'Signing in...' : 'Sign in with Google'}
-            </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsEnteringNewAccount(true);
+                        setCustomGoogleEmail('');
+                        setCustomGoogleName('');
+                      }}
+                      className="w-full flex items-center justify-center gap-2 p-3 bg-slate-50 hover:bg-slate-100 dark:bg-slate-800/60 dark:hover:bg-slate-800 rounded-2xl border border-dashed border-slate-200 dark:border-slate-700 text-xs font-bold text-slate-700 dark:text-slate-200 transition-all cursor-pointer"
+                    >
+                      <User className="w-4 h-4 text-indigo-500" />
+                      <span>Use another Google account</span>
+                    </button>
+                  </div>
+                ) : (
+                  /* Form to enter Google Email & Name */
+                  <form
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      if (!customGoogleEmail.trim()) return;
+                      handleSelectGoogleAccountForAuth(
+                        customGoogleEmail,
+                        customGoogleName,
+                        `https://api.dicebear.com/7.x/adventurer/svg?seed=${customGoogleEmail.trim().toLowerCase()}`
+                      );
+                    }}
+                    className="space-y-3.5"
+                  >
+                    <p className="text-xs text-slate-500 dark:text-slate-400 font-medium">
+                      Enter your Google account details to proceed:
+                    </p>
+
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-black uppercase text-slate-400 tracking-wider">Google Email Address</label>
+                      <div className="relative">
+                        <Mail className="w-4 h-4 absolute left-3 top-3.5 text-slate-400" />
+                        <input
+                          type="email"
+                          required
+                          value={customGoogleEmail}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            setCustomGoogleEmail(val);
+                            if (!customGoogleName && val.includes('@')) {
+                              const prefix = val.split('@')[0];
+                              const formatted = prefix.replace(/[._]/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
+                              setCustomGoogleName(formatted);
+                            }
+                          }}
+                          placeholder="e.g. yourname@gmail.com"
+                          className="w-full pl-9 pr-4 py-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-xs font-semibold text-slate-900 dark:text-white focus:outline-none focus:border-indigo-500"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-black uppercase text-slate-400 tracking-wider">Full Name / Display Name</label>
+                      <input
+                        type="text"
+                        value={customGoogleName}
+                        onChange={(e) => setCustomGoogleName(e.target.value)}
+                        placeholder="e.g. Alex Smith"
+                        className="w-full px-4 py-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-xs font-semibold text-slate-900 dark:text-white focus:outline-none focus:border-indigo-500"
+                      />
+                    </div>
+
+                    <div className="flex gap-2 pt-1">
+                      {savedGoogleAccounts.length > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => setIsEnteringNewAccount(false)}
+                          className="px-4 py-2.5 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 font-bold text-xs rounded-xl cursor-pointer"
+                        >
+                          Back
+                        </button>
+                      )}
+                      <button
+                        type="submit"
+                        disabled={authLoading || !customGoogleEmail.trim()}
+                        className="flex-1 py-3 bg-indigo-600 hover:bg-indigo-500 text-white font-black text-xs rounded-xl shadow-md transition-all cursor-pointer disabled:opacity-50 flex items-center justify-center gap-2"
+                      >
+                        {authLoading ? <span className="h-4 w-4 border-2 border-white/30 border-t-white rounded-full animate-spin"></span> : 'Continue with Google Account →'}
+                      </button>
+                    </div>
+                  </form>
+                )}
+              </div>
+            ) : (
+              /* Password Step for Selected Google Account */
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  handleGoogleLogin(selectedGoogleAccount.email, selectedGoogleAccount.displayName, selectedGoogleAccount.photoUrl, googlePasswordInput);
+                }}
+                className="space-y-4"
+              >
+                {/* Account card summary header */}
+                <div className="flex items-center justify-between p-3 rounded-2xl bg-slate-50 dark:bg-slate-800/80 border border-slate-100 dark:border-slate-700">
+                  <div className="flex items-center gap-3 min-w-0">
+                    <img
+                      src={selectedGoogleAccount.photoUrl}
+                      alt={selectedGoogleAccount.displayName}
+                      className="w-10 h-10 rounded-full object-cover ring-2 ring-indigo-500/30 shrink-0"
+                    />
+                    <div className="min-w-0">
+                      <h4 className="text-xs font-bold text-slate-900 dark:text-white truncate">{selectedGoogleAccount.displayName}</h4>
+                      <p className="text-[11px] text-slate-400 dark:text-slate-400 truncate">{selectedGoogleAccount.email}</p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelectedGoogleAccount(null);
+                      setGooglePasswordInput('');
+                    }}
+                    className="px-2.5 py-1 text-[10px] font-bold text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-950/50 hover:bg-indigo-100 rounded-lg cursor-pointer shrink-0"
+                  >
+                    Change
+                  </button>
+                </div>
+
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <label className="text-[10px] font-black uppercase text-slate-400 tracking-wider">
+                      {googleAccountIsRegistered === false ? 'Set Strong Password (First Time)' : 'Account Password'}
+                    </label>
+                    {googleAccountIsRegistered === false ? (
+                      <span className="text-[9px] font-extrabold text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/40 px-2 py-0.5 rounded-full">
+                        New Account
+                      </span>
+                    ) : (
+                      <span className="text-[9px] font-extrabold text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-950/40 px-2 py-0.5 rounded-full">
+                        Existing Account
+                      </span>
+                    )}
+                  </div>
+
+                  <div className="relative">
+                    <Lock className="w-4 h-4 absolute left-3 top-3.5 text-slate-400" />
+                    <input
+                      type={showGooglePasswordText ? "text" : "password"}
+                      required
+                      minLength={googleAccountIsRegistered === false ? 6 : undefined}
+                      value={googlePasswordInput}
+                      onChange={(e) => setGooglePasswordInput(e.target.value)}
+                      placeholder={googleAccountIsRegistered === false ? "Set strong password (at least 6 characters)" : "Enter the same password you set while creating account"}
+                      className="w-full pl-9 pr-10 py-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-xs font-semibold text-slate-900 dark:text-white focus:outline-none focus:border-indigo-500"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowGooglePasswordText(!showGooglePasswordText)}
+                      className="absolute right-3 top-3 text-slate-400 hover:text-slate-600 cursor-pointer"
+                    >
+                      {showGooglePasswordText ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    </button>
+                  </div>
+
+                  {/* Password Strength Meter when registering */}
+                  {googleAccountIsRegistered === false && googlePasswordInput && (
+                    <div className="space-y-1 pt-1">
+                      <div className="flex gap-1 h-1.5 w-full bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden">
+                        <div className={`h-full transition-all duration-300 ${calculatePasswordStrength(googlePasswordInput).score >= 1 ? calculatePasswordStrength(googlePasswordInput).color : 'bg-transparent'}`} style={{ width: '33%' }} />
+                        <div className={`h-full transition-all duration-300 ${calculatePasswordStrength(googlePasswordInput).score >= 2 ? calculatePasswordStrength(googlePasswordInput).color : 'bg-transparent'}`} style={{ width: '33%' }} />
+                        <div className={`h-full transition-all duration-300 ${calculatePasswordStrength(googlePasswordInput).score >= 3 ? calculatePasswordStrength(googlePasswordInput).color : 'bg-transparent'}`} style={{ width: '34%' }} />
+                      </div>
+                      <p className="text-[10px] font-bold text-slate-500 dark:text-slate-400 flex items-center gap-1">
+                        <Shield className="w-3 h-3 text-emerald-500 shrink-0" />
+                        <span>{calculatePasswordStrength(googlePasswordInput).label}</span>
+                      </p>
+                    </div>
+                  )}
+
+                  <p className="text-[9px] text-slate-400 leading-tight">
+                    {googleAccountIsRegistered === false
+                      ? 'Set a strong password for your new account to keep it secured.'
+                      : 'Enter the same password you set when creating your account.'}
+                  </p>
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={authLoading || (googleAccountIsRegistered === false && googlePasswordInput.length < 6)}
+                  className="w-full py-3 bg-gradient-to-r from-indigo-600 via-purple-600 to-pink-600 text-white font-black text-xs rounded-xl shadow-md hover:opacity-95 transition-all cursor-pointer disabled:opacity-50 flex items-center justify-center gap-2"
+                >
+                  {authLoading ? (
+                    <span className="h-4 w-4 border-2 border-white/30 border-t-white rounded-full animate-spin"></span>
+                  ) : (
+                    <span>{googleAccountIsRegistered === false ? 'Set Password & Create Account →' : 'Log In with Password →'}</span>
+                  )}
+                </button>
+              </form>
+            )}
           </div>
         </div>
 
-        {/* --- GOOGLE SIMULATED SSO MODAL OVERLAY --- */}
+        {/* --- GOOGLE SSO MODAL OVERLAY --- */}
         <AnimatePresence>
           {showGoogleModal && (
             <motion.div
@@ -1812,12 +2830,12 @@ export default function App() {
                 initial={{ scale: 0.95, y: 15 }}
                 animate={{ scale: 1, y: 0 }}
                 exit={{ scale: 0.95, y: 15 }}
-                className="w-full max-w-sm bg-white dark:bg-slate-900 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-2xl p-6 text-slate-800 dark:text-slate-200 overflow-hidden"
+                className="w-full max-w-md bg-white dark:bg-slate-900 rounded-3xl border border-slate-100 dark:border-slate-800 shadow-2xl p-6 md:p-7 text-slate-800 dark:text-slate-200 overflow-hidden"
               >
                 {/* Google Brand Header */}
                 <div className="text-center pb-5 border-b border-slate-100 dark:border-slate-800">
                   <div className="flex justify-center mb-2.5">
-                    <svg className="w-9 h-9" viewBox="0 0 24 24">
+                    <svg className="w-10 h-10" viewBox="0 0 24 24">
                       <path
                         fill="#4285F4"
                         d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
@@ -1836,60 +2854,262 @@ export default function App() {
                       />
                     </svg>
                   </div>
-                  <h3 className="text-base font-bold text-slate-900 dark:text-white">Choose an account</h3>
-                  <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-1">
-                    to continue to <span className="font-bold text-indigo-600 dark:text-indigo-400">BaBU</span>
+                  <h3 className="text-lg font-black text-slate-900 dark:text-white font-display">
+                    Sign in with Google
+                  </h3>
+                  <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+                    to continue to <span className="font-extrabold text-indigo-600 dark:text-indigo-400">BaBU</span>
                   </p>
                 </div>
 
-                {/* Account list */}
-                <div className="py-4 space-y-2">
-                  <button
-                    onClick={() => handleGoogleLogin('aarogyaparajuli13@gmail.com', 'Aarogya Parajuli', 'https://api.dicebear.com/7.x/adventurer/svg?seed=aarogya_parajuli')}
-                    className="w-full flex items-center gap-3 p-3 hover:bg-slate-50 dark:hover:bg-slate-800/80 rounded-xl transition-colors cursor-pointer text-left border border-transparent hover:border-slate-100 dark:hover:border-slate-850"
-                  >
-                    <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-indigo-500 to-purple-500 flex items-center justify-center text-white font-bold text-xs shadow-md">
-                      AP
-                    </div>
-                    <div className="flex-grow">
-                      <div className="text-xs font-bold text-slate-900 dark:text-white leading-tight">Aarogya Parajuli</div>
-                      <div className="text-[10px] text-slate-400 dark:text-slate-500 break-all leading-tight">aarogyaparajuli13@gmail.com</div>
-                    </div>
-                    <span className="text-[10px] font-bold text-indigo-500 bg-indigo-50 dark:bg-indigo-950/60 px-2 py-0.5 rounded uppercase tracking-wider">
-                      Active
-                    </span>
-                  </button>
+                {/* Body Content */}
+                <div className="py-5">
+                  {!selectedGoogleAccount ? (
+                    savedGoogleAccounts.length > 0 && !isEnteringNewAccount ? (
+                      <div className="space-y-3">
+                        <div className="space-y-2 max-h-60 overflow-y-auto pr-1 custom-scrollbar">
+                          {savedGoogleAccounts.map((acc) => (
+                            <div
+                              key={acc.email}
+                              onClick={() => handleSelectGoogleAccountForAuth(acc.email, acc.displayName, acc.photoUrl)}
+                              className="group relative flex items-center gap-3.5 p-3.5 hover:bg-slate-50 dark:hover:bg-slate-800/80 rounded-2xl transition-all cursor-pointer border border-slate-100 dark:border-slate-800 hover:border-indigo-200 dark:hover:border-indigo-800 shadow-sm"
+                            >
+                              <SafeAvatar
+                                src={acc.photoUrl}
+                                name={acc.displayName}
+                                size="sm"
+                              />
+                              <div className="flex-grow min-w-0">
+                                <div className="text-xs font-bold text-slate-900 dark:text-white truncate">
+                                  {acc.displayName}
+                                </div>
+                                <div className="text-[11px] text-slate-400 dark:text-slate-500 truncate">
+                                  {acc.email}
+                                </div>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={(e) => handleRemoveSavedAccount(acc.email, e)}
+                                className="p-1.5 text-slate-300 hover:text-rose-500 rounded-lg hover:bg-rose-50 dark:hover:bg-rose-950/40 transition-colors"
+                                title="Remove account from this device"
+                              >
+                                <X className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          ))}
+                        </div>
 
-                  <button
-                    onClick={() => {
-                      const email = prompt('Enter Google Account Student Email:', 'student@university.edu');
-                      if (email) {
-                        const name = email.split('@')[0];
-                        handleGoogleLogin(email, name, `https://api.dicebear.com/7.x/adventurer/svg?seed=${name}`);
-                      }
-                    }}
-                    className="w-full flex items-center gap-3 p-3 hover:bg-slate-50 dark:hover:bg-slate-800/80 rounded-xl transition-colors cursor-pointer text-left border border-slate-100 dark:border-slate-800/60"
-                  >
-                    <div className="w-8 h-8 rounded-full bg-slate-100 dark:bg-slate-800 flex items-center justify-center text-slate-600 dark:text-slate-300">
-                      <User className="w-4 h-4" />
-                    </div>
-                    <div>
-                      <div className="text-xs font-bold text-slate-900 dark:text-white leading-tight">Use another account</div>
-                      <div className="text-[10px] text-slate-400 dark:text-slate-500 leading-tight">Secure Google Workspace SSO</div>
-                    </div>
-                  </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setIsEnteringNewAccount(true);
+                            setCustomGoogleEmail('');
+                            setCustomGoogleName('');
+                          }}
+                          className="w-full flex items-center justify-center gap-2 p-3 bg-slate-50 hover:bg-slate-100 dark:bg-slate-800/60 dark:hover:bg-slate-800 rounded-2xl border border-dashed border-slate-200 dark:border-slate-700 text-xs font-bold text-slate-700 dark:text-slate-200 transition-all cursor-pointer"
+                        >
+                          <User className="w-4 h-4 text-indigo-500" />
+                          <span>Use another Google account</span>
+                        </button>
+                      </div>
+                    ) : (
+                      <form
+                        onSubmit={(e) => {
+                          e.preventDefault();
+                          if (!customGoogleEmail.trim()) return;
+                          handleSelectGoogleAccountForAuth(
+                            customGoogleEmail,
+                            customGoogleName,
+                            `https://api.dicebear.com/7.x/adventurer/svg?seed=${customGoogleEmail.trim().toLowerCase()}`
+                          );
+                        }}
+                        className="space-y-4"
+                      >
+                        <p className="text-xs text-slate-500 dark:text-slate-400 font-medium">
+                          Enter your Google account details to sign in to BaBU:
+                        </p>
+
+                        <div className="space-y-1.5">
+                          <label className="text-[10px] font-black uppercase tracking-wider text-slate-400 font-display">
+                            Google Email Address
+                          </label>
+                          <input
+                            type="email"
+                            required
+                            value={customGoogleEmail}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              setCustomGoogleEmail(val);
+                              if (!customGoogleName && val.includes('@')) {
+                                const prefix = val.split('@')[0];
+                                const formatted = prefix.replace(/[._]/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
+                                setCustomGoogleName(formatted);
+                              }
+                            }}
+                            placeholder="e.g. yourname@gmail.com"
+                            className="w-full px-4 py-3 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-2xl text-xs font-semibold text-slate-900 dark:text-white focus:outline-none focus:border-indigo-500"
+                          />
+                        </div>
+
+                        <div className="space-y-1.5">
+                          <label className="text-[10px] font-black uppercase tracking-wider text-slate-400 font-display">
+                            Full Name / Display Name
+                          </label>
+                          <input
+                            type="text"
+                            value={customGoogleName}
+                            onChange={(e) => setCustomGoogleName(e.target.value)}
+                            placeholder="e.g. Alex Smith"
+                            className="w-full px-4 py-3 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-2xl text-xs font-semibold text-slate-900 dark:text-white focus:outline-none focus:border-indigo-500"
+                          />
+                        </div>
+
+                        <div className="flex gap-2.5 pt-2">
+                          {savedGoogleAccounts.length > 0 && (
+                            <button
+                              type="button"
+                              onClick={() => setIsEnteringNewAccount(false)}
+                              className="px-4 py-3 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 text-slate-700 dark:text-slate-300 font-bold text-xs rounded-2xl transition-all cursor-pointer"
+                            >
+                              Back
+                            </button>
+                          )}
+                          <button
+                            type="submit"
+                            disabled={authLoading || !customGoogleEmail.trim()}
+                            className="flex-1 py-3 bg-gradient-to-r from-indigo-600 via-purple-600 to-pink-600 hover:opacity-95 text-white font-black text-xs rounded-2xl shadow-md transition-all cursor-pointer disabled:opacity-50 flex items-center justify-center gap-2"
+                          >
+                            {authLoading ? (
+                              <span className="h-4 w-4 border-2 border-white/30 border-t-white rounded-full animate-spin"></span>
+                            ) : (
+                              <span>Continue →</span>
+                            )}
+                          </button>
+                        </div>
+                      </form>
+                    )
+                  ) : (
+                    /* Password Step */
+                    <form
+                      onSubmit={(e) => {
+                        e.preventDefault();
+                        handleGoogleLogin(selectedGoogleAccount.email, selectedGoogleAccount.displayName, selectedGoogleAccount.photoUrl, googlePasswordInput);
+                      }}
+                      className="space-y-4"
+                    >
+                      <div className="flex items-center justify-between p-3 rounded-2xl bg-slate-50 dark:bg-slate-800/80 border border-slate-100 dark:border-slate-700">
+                        <div className="flex items-center gap-3 min-w-0">
+                          <img
+                            src={selectedGoogleAccount.photoUrl}
+                            alt={selectedGoogleAccount.displayName}
+                            className="w-10 h-10 rounded-full object-cover ring-2 ring-indigo-500/30 shrink-0"
+                          />
+                          <div className="min-w-0">
+                            <h4 className="text-xs font-bold text-slate-900 dark:text-white truncate">{selectedGoogleAccount.displayName}</h4>
+                            <p className="text-[11px] text-slate-400 dark:text-slate-400 truncate">{selectedGoogleAccount.email}</p>
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSelectedGoogleAccount(null);
+                            setGooglePasswordInput('');
+                          }}
+                          className="px-2.5 py-1 text-[10px] font-bold text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-950/50 hover:bg-indigo-100 rounded-lg cursor-pointer shrink-0"
+                        >
+                          Change
+                        </button>
+                      </div>
+
+                      <div className="space-y-1.5">
+                        <div className="flex items-center justify-between">
+                          <label className="text-[10px] font-black uppercase text-slate-400 tracking-wider">
+                            {googleAccountIsRegistered === false ? 'Set Strong Password (First Time)' : 'Account Password'}
+                          </label>
+                          {googleAccountIsRegistered === false ? (
+                            <span className="text-[9px] font-extrabold text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/40 px-2 py-0.5 rounded-full">
+                              New Account
+                            </span>
+                          ) : (
+                            <span className="text-[9px] font-extrabold text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-950/40 px-2 py-0.5 rounded-full">
+                              Existing Account
+                            </span>
+                          )}
+                        </div>
+
+                        <div className="relative">
+                          <Lock className="w-4 h-4 absolute left-3 top-3.5 text-slate-400" />
+                          <input
+                            type={showGooglePasswordText ? "text" : "password"}
+                            required
+                            minLength={googleAccountIsRegistered === false ? 6 : undefined}
+                            value={googlePasswordInput}
+                            onChange={(e) => setGooglePasswordInput(e.target.value)}
+                            placeholder={googleAccountIsRegistered === false ? "Set strong password (at least 6 characters)" : "Enter the same password you set while creating account"}
+                            className="w-full pl-9 pr-10 py-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-xs font-semibold text-slate-900 dark:text-white focus:outline-none focus:border-indigo-500"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => setShowGooglePasswordText(!showGooglePasswordText)}
+                            className="absolute right-3 top-3 text-slate-400 hover:text-slate-600 cursor-pointer"
+                          >
+                            {showGooglePasswordText ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                          </button>
+                        </div>
+
+                        {/* Password Strength Meter when registering */}
+                        {googleAccountIsRegistered === false && googlePasswordInput && (
+                          <div className="space-y-1 pt-1">
+                            <div className="flex gap-1 h-1.5 w-full bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden">
+                              <div className={`h-full transition-all duration-300 ${calculatePasswordStrength(googlePasswordInput).score >= 1 ? calculatePasswordStrength(googlePasswordInput).color : 'bg-transparent'}`} style={{ width: '33%' }} />
+                              <div className={`h-full transition-all duration-300 ${calculatePasswordStrength(googlePasswordInput).score >= 2 ? calculatePasswordStrength(googlePasswordInput).color : 'bg-transparent'}`} style={{ width: '33%' }} />
+                              <div className={`h-full transition-all duration-300 ${calculatePasswordStrength(googlePasswordInput).score >= 3 ? calculatePasswordStrength(googlePasswordInput).color : 'bg-transparent'}`} style={{ width: '34%' }} />
+                            </div>
+                            <p className="text-[10px] font-bold text-slate-500 dark:text-slate-400 flex items-center gap-1">
+                              <Shield className="w-3 h-3 text-emerald-500 shrink-0" />
+                              <span>{calculatePasswordStrength(googlePasswordInput).label}</span>
+                            </p>
+                          </div>
+                        )}
+
+                        <p className="text-[9px] text-slate-400 leading-tight">
+                          {googleAccountIsRegistered === false
+                            ? 'Set a strong password for your new account to keep it secured.'
+                            : 'Enter the same password you set when creating your account.'}
+                        </p>
+                      </div>
+
+                      <button
+                        type="submit"
+                        disabled={authLoading || (googleAccountIsRegistered === false && googlePasswordInput.length < 6)}
+                        className="w-full py-3 bg-gradient-to-r from-indigo-600 via-purple-600 to-pink-600 text-white font-black text-xs rounded-xl shadow-md hover:opacity-95 transition-all cursor-pointer disabled:opacity-50 flex items-center justify-center gap-2"
+                      >
+                        {authLoading ? (
+                          <span className="h-4 w-4 border-2 border-white/30 border-t-white rounded-full animate-spin"></span>
+                        ) : (
+                          <span>{googleAccountIsRegistered === false ? 'Set Password & Create Account →' : 'Log In with Password →'}</span>
+                        )}
+                      </button>
+                    </form>
+                  )}
                 </div>
 
                 {/* Cancel / Footer */}
                 <div className="flex items-center justify-between pt-3 border-t border-slate-100 dark:border-slate-800">
                   <button
-                    onClick={() => setShowGoogleModal(false)}
+                    type="button"
+                    onClick={() => {
+                      setShowGoogleModal(false);
+                      setIsEnteringNewAccount(false);
+                      setSelectedGoogleAccount(null);
+                      setGooglePasswordInput('');
+                    }}
                     className="text-xs font-bold text-slate-500 hover:text-slate-800 dark:hover:text-slate-200 transition-colors cursor-pointer"
                   >
                     Cancel
                   </button>
                   <span className="text-[9px] text-slate-400 dark:text-slate-500 text-right leading-tight max-w-[200px]">
-                    Google will share your name, email, and photo with BaBU.
+                    Google account data is protected with strong password security.
                   </span>
                 </div>
               </motion.div>
@@ -2002,10 +3222,11 @@ export default function App() {
         {/* User Mini Card */}
         <div className="p-4 border-t border-slate-100 dark:border-slate-800 space-y-2">
           <div className="flex items-center gap-3 px-2">
-            <img 
-              src={currentUser.avatarUrl} 
-              alt="avatar" 
-              className="w-9 h-9 rounded-full object-cover ring-2 ring-slate-100 dark:ring-slate-800" 
+            <SafeAvatar
+              src={currentUser.avatarUrl}
+              name={currentUser.displayName}
+              frame={currentUser.frame}
+              size="sm"
             />
             <div className="overflow-hidden">
               <p className="text-xs font-bold text-slate-800 dark:text-white truncate">{currentUser.displayName}</p>
@@ -2024,27 +3245,29 @@ export default function App() {
 
       {/* --- MOBILE NAVBAR --- */}
       <div 
-        className="md:hidden fixed bottom-0 left-0 right-0 bg-white dark:bg-slate-900 border-t border-slate-100 dark:border-slate-800 grid grid-cols-5 gap-1 z-30 py-2"
-        style={{ marginLeft: '-9px', marginTop: '-8px', marginRight: '-5px', marginBottom: '0px', paddingTop: '10px', paddingBottom: '8px' }}
+        className="md:hidden fixed bottom-0 left-0 right-0 bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border-t border-slate-200/80 dark:border-slate-800 grid grid-cols-6 gap-0.5 z-30 py-2 px-1"
       >
         {[
-          { id: 'home', label: 'Home', icon: <BookOpen className="w-5 h-5" style={{ marginLeft: '-3px', paddingTop: '-1px', paddingLeft: '-5px', paddingRight: '0px' }} /> },
-          { id: 'journals', label: 'Time', icon: <Clock className="w-5 h-5" /> },
-          { id: 'social', label: 'Feed', icon: <Users className="w-5 h-5" /> },
-          { id: 'chat', label: 'Chat', icon: <MessageSquare className="w-5 h-5" /> },
-          { id: 'profile', label: 'Profile', icon: <User className="w-5 h-5" /> },
-        ].map((item, index) => (
+          { id: 'home', label: 'Home', icon: <BookOpen className="w-4 h-4" /> },
+          { id: 'journals', label: 'Time', icon: <Clock className="w-4 h-4" /> },
+          { id: 'leaderboard', label: 'Rank', icon: <Trophy className="w-4 h-4 text-amber-500" /> },
+          { id: 'social', label: 'Feed', icon: <Users className="w-4 h-4" /> },
+          { id: 'chat', label: 'Chat', icon: <MessageSquare className="w-4 h-4" /> },
+          { id: 'profile', label: 'Profile', icon: <User className="w-4 h-4" /> },
+        ].map((item) => (
           <div
             key={item.id}
             role="button"
-            onClick={() => setCurrentTab(item.id as any)}
-            style={index === 0 ? { marginLeft: '13px', marginRight: '-4px', marginTop: '1px', marginBottom: '-1px', paddingLeft: '2px', paddingTop: '1px', paddingBottom: '1px' } : undefined}
-            className={`flex flex-col items-center justify-center gap-0.5 text-[9px] font-bold cursor-pointer ${
-              currentTab === item.id ? 'text-indigo-600' : 'text-slate-400'
+            onClick={() => {
+              setCurrentTab(item.id as any);
+              if (item.id === 'leaderboard') fetchLeaderboards(currentUser.email, 'global', 'weekly');
+            }}
+            className={`flex flex-col items-center justify-center gap-0.5 text-[9px] font-bold cursor-pointer transition-colors py-1 ${
+              currentTab === item.id ? 'text-violet-600 dark:text-violet-400 font-extrabold' : 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-300'
             }`}
           >
             {item.icon}
-            {item.label}
+            <span>{item.label}</span>
           </div>
         ))}
       </div>
@@ -2110,148 +3333,117 @@ export default function App() {
               )}
             </AnimatePresence>
 
-            {/* Header Greeting Block */}
-            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 md:gap-4">
-              <div>
-                <h1 className="font-black text-slate-900 dark:text-white text-xl md:text-2xl font-display" style={{ fontSize: '22px' }}>
-                  {getDeviceGreeting(currentUser.displayName)}
-                </h1>
-                <p className="text-slate-400 mt-0.5 text-xs" style={{ fontSize: '13px', fontWeight: 'bold' }}>
-                  Hope you had a productive day! ✨
-                </p>
-              </div>
 
-              {/* Fire Streak Flame Card */}
-              <div 
-                className="flex items-center gap-3.5 px-4 md:px-5 py-2.5 md:py-3 rounded-2xl border-2 border-amber-300 dark:border-amber-700/60 shadow-md transition-all relative overflow-hidden select-none flex-shrink-0"
-                style={{ backgroundColor: '#fffbeb' }}
-              >
-                {/* Animated Flame */}
-                <AnimatedFireFlame isFrozen={false} size="md" />
 
-                {/* Info Text */}
-                <div className="flex flex-col justify-center">
-                  <div className="text-[10px] text-slate-600 font-bold mt-1 leading-none">
-                    <span>Longest: {currentUser.stats.longestStreak} days</span>
+            {/* Core Action Layout */}
+            <div className="space-y-6">
+              
+              {/* Main Column: Reflection and Multi-Day Evaluation */}
+              <div className="space-y-6">
+                
+                {/* Date Navigation & Multi-Day Memory Controller */}
+                <div className="bg-white/80 dark:bg-slate-900/80 backdrop-blur-md p-4 rounded-[28px] border border-violet-100/50 dark:border-slate-800/80 shadow-md flex flex-col sm:flex-row items-center justify-between gap-3">
+                  <div className="flex items-center gap-2 w-full sm:w-auto justify-between sm:justify-start">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const d = new Date(selectedDate);
+                        d.setDate(d.getDate() - 1);
+                        setSelectedDate(d.toISOString().split('T')[0]);
+                      }}
+                      className="p-2.5 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 rounded-2xl transition-all font-bold text-xs flex items-center gap-1 cursor-pointer"
+                      title="Previous Day"
+                    >
+                      <ChevronLeft className="w-4 h-4" />
+                      <span className="hidden sm:inline">Prev Day</span>
+                    </button>
+
+                    <div className="relative flex items-center gap-2 px-3 py-2 bg-violet-50/80 dark:bg-violet-950/40 border border-violet-200 dark:border-violet-800/60 rounded-2xl shadow-inner">
+                      <CalendarIcon className="w-4 h-4 text-violet-600 dark:text-violet-400 shrink-0" />
+                      <input 
+                        type="date"
+                        value={selectedDate}
+                        onChange={(e) => {
+                          if (e.target.value) setSelectedDate(e.target.value);
+                        }}
+                        className="bg-transparent text-xs font-black text-slate-800 dark:text-white cursor-pointer focus:outline-none"
+                      />
+                      <span className={`text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full ${
+                        selectedDate === todayDateStr 
+                          ? 'bg-emerald-500 text-white' 
+                          : selectedDate < todayDateStr 
+                          ? 'bg-amber-500 text-white' 
+                          : 'bg-violet-500 text-white'
+                      }`}>
+                        {selectedDate === todayDateStr ? 'Today' : selectedDate < todayDateStr ? 'Past' : 'Future'}
+                      </span>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const d = new Date(selectedDate);
+                        d.setDate(d.getDate() + 1);
+                        setSelectedDate(d.toISOString().split('T')[0]);
+                      }}
+                      className="p-2.5 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 rounded-2xl transition-all font-bold text-xs flex items-center gap-1 cursor-pointer"
+                      title="Next Day"
+                    >
+                      <span className="hidden sm:inline">Next Day</span>
+                      <ChevronRight className="w-4 h-4" />
+                    </button>
+                  </div>
+
+                  {/* Quick Date Pills */}
+                  <div className="flex items-center gap-1.5 overflow-x-auto w-full sm:w-auto pb-1 sm:pb-0 justify-center">
+                    {[
+                      { label: 'Today', date: todayDateStr },
+                      { label: 'Yesterday', date: new Date(Date.now() - 86400000).toISOString().split('T')[0] },
+                      { label: '2d Ago', date: new Date(Date.now() - 86400000 * 2).toISOString().split('T')[0] },
+                      { label: '3d Ago', date: new Date(Date.now() - 86400000 * 3).toISOString().split('T')[0] },
+                    ].map(item => (
+                      <button
+                        key={item.label}
+                        type="button"
+                        onClick={() => setSelectedDate(item.date)}
+                        className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer whitespace-nowrap ${
+                          selectedDate === item.date
+                            ? 'bg-gradient-to-r from-violet-600 to-fuchsia-600 text-white shadow-sm'
+                            : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-700'
+                        }`}
+                      >
+                        {item.label}
+                      </button>
+                    ))}
                   </div>
                 </div>
-              </div>
-            </div>
 
-            {/* Core Action Layout Grid */}
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-              
-              {/* Column 1 & 2: Reflection and Today's Evaluation */}
-              <div className="lg:col-span-2 space-y-6">
-                
                 {/* Journal reflection writer card */}
-                <div className="bg-white/80 dark:bg-slate-900/80 backdrop-blur-md p-6 rounded-[32px] border border-violet-100/50 dark:border-slate-800/80 shadow-md hover:shadow-lg transition-all duration-300 space-y-4" style={{ marginTop: '-15px' }}>
+                <div className="bg-white/80 dark:bg-slate-900/80 backdrop-blur-md p-6 rounded-[32px] border border-violet-100/50 dark:border-slate-800/80 shadow-md hover:shadow-lg transition-all duration-300 space-y-4">
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2">
-                      <Sparkles className="text-violet-500" style={{ fontSize: '16px', width: '16px', height: '16px' }} />
-                      <h3 className="text-slate-800 dark:text-white font-bold" style={{ fontSize: '14px', lineHeight: '21.2857px', fontFamily: 'Plus Jakarta Sans', borderWidth: '0px', borderRadius: '4px', borderStyle: 'ridge' }}>
-                        Today's Reflection Journal
+                      <Sparkles className="w-4 h-4 text-violet-500" />
+                      <h3 className="text-slate-800 dark:text-white font-bold text-sm">
+                        {selectedDate === todayDateStr ? "Today's Reflection Journal" : `Reflection Journal for ${selectedDate}`}
                       </h3>
                     </div>
                     {/* Saved Status Indicator */}
                     <div className="flex items-center gap-1.5 text-xs text-slate-400">
-                      {saveStatus === 'saved' && <span className="flex items-center gap-1"><Check className="w-3.5 h-3.5 text-emerald-500" /> Autosaved</span>}
-                      {saveStatus === 'saving' && <span className="animate-pulse">Saving draft...</span>}
-                      {saveStatus === 'error' && <span className="text-rose-500">Autosave failed</span>}
+                      {saveStatus === 'saved' && <span className="flex items-center gap-1 text-[11px] font-semibold text-emerald-600 dark:text-emerald-400"><Check className="w-3.5 h-3.5" /> Autosaved</span>}
+                      {saveStatus === 'saving' && <span className="animate-pulse text-[11px] font-semibold text-slate-400">Saving draft...</span>}
+                      {saveStatus === 'error' && <span className="text-rose-500 text-[11px] font-semibold">Autosave failed</span>}
                     </div>
                   </div>
-
-                  {/* Voice Control Banner */}
-                  <AnimatePresence>
-                    {voiceStatus !== 'idle' && (
-                      <motion.div
-                        initial={{ opacity: 0, y: -6, scale: 0.98 }}
-                        animate={{ opacity: 1, y: 0, scale: 1 }}
-                        exit={{ opacity: 0, y: -6, scale: 0.98 }}
-                        className="p-4 rounded-2xl bg-gradient-to-r from-violet-500/10 via-fuchsia-500/10 to-rose-500/10 border border-violet-200 dark:border-violet-800 space-y-3"
-                      >
-                        <div className="flex items-center justify-between">
-                          <div className="flex items-center gap-2.5">
-                            {voiceStatus === 'recording' && (
-                              <div className="flex items-center gap-2">
-                                <span className="relative flex h-3 w-3">
-                                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-rose-400 opacity-75"></span>
-                                  <span className="relative inline-flex rounded-full h-3 w-3 bg-rose-500"></span>
-                                </span>
-                                <span className="text-xs font-black text-rose-600 dark:text-rose-400 uppercase tracking-wider font-display">
-                                  Recording Voice ({Math.floor(voiceSeconds / 60).toString().padStart(2, '0')}:{(voiceSeconds % 60).toString().padStart(2, '0')})
-                                </span>
-                              </div>
-                            )}
-
-                            {voiceStatus === 'analyzing' && (
-                              <div className="flex items-center gap-2">
-                                <span className="w-4 h-4 border-2 border-violet-600 border-t-transparent rounded-full animate-spin"></span>
-                                <span className="text-xs font-black text-violet-600 dark:text-violet-400 uppercase tracking-wider font-display">
-                                  Analyzing Audio with DayScore AI...
-                                </span>
-                              </div>
-                            )}
-
-                            {voiceStatus === 'typing' && (
-                              <div className="flex items-center gap-2">
-                                <Sparkles className="w-4 h-4 text-amber-500 animate-bounce" />
-                                <span className="text-xs font-black text-amber-600 dark:text-amber-400 uppercase tracking-wider font-display">
-                                  Typing Analyzed Speech into Journal...
-                                </span>
-                              </div>
-                            )}
-                          </div>
-
-                          <div className="flex items-center gap-2">
-                            {voiceStatus === 'recording' && (
-                              <>
-                                <button
-                                  type="button"
-                                  onClick={cancelOrSkipVoice}
-                                  className="px-3 py-1.5 text-xs font-extrabold text-slate-500 hover:text-slate-700 dark:hover:text-white transition-colors cursor-pointer"
-                                >
-                                  Cancel
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={stopAndAnalyzeVoice}
-                                  className="px-4 py-2 bg-gradient-to-r from-violet-600 to-fuchsia-600 hover:from-violet-500 hover:to-fuchsia-500 text-white font-black rounded-xl text-xs shadow-md hover:shadow-lg transition-all flex items-center gap-1.5 cursor-pointer active:scale-95"
-                                >
-                                  <Sparkles className="w-3.5 h-3.5 text-amber-200" />
-                                  <span>Stop & Analyze</span>
-                                </button>
-                              </>
-                            )}
-
-                            {voiceStatus === 'typing' && (
-                              <button
-                                type="button"
-                                onClick={cancelOrSkipVoice}
-                                className="px-3 py-1 bg-violet-500/10 text-violet-600 dark:text-violet-400 rounded-lg text-xs font-bold hover:bg-violet-500/20 transition-colors cursor-pointer"
-                              >
-                                Insert Instantly
-                              </button>
-                            )}
-                          </div>
-                        </div>
-
-                        {voiceStatus === 'recording' && (
-                          <div className="p-2.5 bg-white/80 dark:bg-slate-900/80 rounded-xl border border-violet-100 dark:border-violet-950/60 text-xs font-medium text-slate-700 dark:text-slate-300 italic">
-                            "{voiceLiveTranscript || 'Listening to your voice... Speak naturally about your day.'}"
-                          </div>
-                        )}
-                      </motion.div>
-                    )}
-                  </AnimatePresence>
 
                   <div className="relative">
                     <textarea
                       value={journalText}
                       onChange={e => setJournalText(e.target.value)}
-                      placeholder="Write about your day. What goals did you hit? Where did you procrastinate? Feel free to use lists, emojis, bullet points, mixed language, or dictation..."
+                      placeholder={selectedDate === todayDateStr
+                        ? "Write about your day. What goals did you hit? Where did you procrastinate? Feel free to use lists, emojis, bullet points, mixed language, or dictation..."
+                        : `Write or update your reflection for ${selectedDate}...`
+                      }
                       className="w-full h-64 md:h-72 p-4 bg-slate-50/50 dark:bg-slate-800/50 rounded-2xl border-2 border-slate-100 dark:border-slate-800 focus:border-violet-500 dark:focus:border-violet-500 focus:outline-none text-sm leading-relaxed transition-colors text-slate-800 dark:text-white font-medium resize-none"
-                      style={{ fontSize: '15px', textAlign: 'left', fontStyle: 'normal', fontFamily: 'Times New Roman' }}
                     />
                     
                     {/* Mic Button */}
@@ -2278,7 +3470,8 @@ export default function App() {
                   {/* Evaluate Button */}
                   <div className="pt-2">
                     <button
-                      onClick={triggerEvaluation}
+                      type="button"
+                      onClick={() => triggerEvaluation(selectedDate)}
                       disabled={loadingEvaluate || !journalText.trim()}
                       className="w-full py-4 bg-gradient-to-r from-violet-600 to-fuchsia-600 hover:from-violet-500 hover:to-fuchsia-500 active:translate-y-0.5 border-b-4 border-violet-800 active:border-b-0 text-white text-sm font-black rounded-2xl transition-all duration-100 flex items-center justify-center gap-2 shadow-lg shadow-violet-200/50 dark:shadow-none disabled:opacity-50 disabled:pointer-events-none cursor-pointer"
                     >
@@ -2290,67 +3483,80 @@ export default function App() {
                       ) : (
                         <>
                           <Sparkles className="w-5 h-5" />
-                          Evaluate Reflection
+                          {selectedDate === todayDateStr ? 'Evaluate Reflection' : `Evaluate Reflection for ${selectedDate}`}
                         </>
                       )}
                     </button>
                   </div>
                 </div>
 
+                {/* DayScore AI Score Mark - Shows mark directly at first, opens total detail modal when clicked */}
+                {selectedEntry && (selectedEntry.score != null || selectedEntry.evaluation != null) ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (selectedEntry.evaluation) {
+                        setActiveEvaluation(selectedEntry.evaluation);
+                        setShowEvaluationModal(true);
+                      } else {
+                        triggerEvaluation(selectedDate);
+                      }
+                    }}
+                    className="w-full bg-gradient-to-r from-violet-600/10 via-fuchsia-600/10 to-indigo-600/10 dark:from-violet-950/50 dark:to-slate-900 p-5 rounded-[28px] border-2 border-violet-300 dark:border-violet-700 hover:border-violet-500 shadow-md hover:shadow-xl transition-all cursor-pointer flex items-center justify-between gap-4 text-left group"
+                    title="Click mark to open total detail of daily score"
+                  >
+                    <div className="flex items-center gap-4">
+                      {/* Score Mark Circle Badge */}
+                      <div className="w-14 h-14 sm:w-16 sm:h-16 rounded-2xl bg-gradient-to-tr from-violet-600 via-fuchsia-600 to-indigo-600 text-white flex flex-col items-center justify-center font-black shadow-md shrink-0 group-hover:scale-105 transition-transform">
+                        <span className="text-xl sm:text-2xl leading-none font-display">
+                          {selectedEntry.score ?? selectedEntry.evaluation?.score ?? 0}
+                        </span>
+                        <span className="text-[8px] font-bold uppercase tracking-wider opacity-90 mt-0.5">/ 100</span>
+                      </div>
+
+                      <div className="space-y-1">
+                        <div className="flex items-center gap-2">
+                          <span className="text-base sm:text-lg">{selectedEntry.emoji || selectedEntry.evaluation?.emoji || '✨'}</span>
+                          <h4 className="text-sm sm:text-base font-black text-slate-900 dark:text-white font-display">
+                            {selectedEntry.title || selectedEntry.evaluation?.title || 'Daily Score Mark'}
+                          </h4>
+                        </div>
+                        <p className="text-xs font-semibold text-violet-600 dark:text-violet-400">
+                          Daily reflection score calculated. Click this mark to view complete AI breakdown & tips →
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="hidden sm:flex items-center gap-1.5 px-3.5 py-2 bg-violet-600 text-white font-black text-xs rounded-xl shadow-sm group-hover:bg-violet-500 transition-colors shrink-0">
+                      <Sparkles className="w-4 h-4 text-amber-300" />
+                      <span>View Details</span>
+                    </div>
+                  </button>
+                ) : (
+                  <div className="bg-slate-50/80 dark:bg-slate-800/40 p-4 rounded-[24px] border border-dashed border-slate-300 dark:border-slate-700 text-center space-y-1.5">
+                    <div className="w-8 h-8 rounded-full bg-violet-100 dark:bg-violet-950/60 text-violet-600 dark:text-violet-400 flex items-center justify-center mx-auto">
+                      <Sparkles className="w-4 h-4" />
+                    </div>
+                    <h4 className="text-xs font-black text-slate-800 dark:text-white font-display">
+                      No DayScore Calculated Yet for {selectedDate === todayDateStr ? 'Today' : selectedDate}
+                    </h4>
+                    <p className="text-[11px] text-slate-500 dark:text-slate-400 max-w-md mx-auto">
+                      Write your reflection journal entry above and click <strong className="text-violet-600 dark:text-violet-400">Evaluate Reflection</strong> to receive your score mark!
+                    </p>
+                  </div>
+                )}
+
                 {/* Contribution peek */}
                 <ContributionGraph 
                   journals={journals} 
-                  onCellClick={(evaluation) => {
-                    setActiveEvaluation(evaluation);
-                    setShowEvaluationModal(true);
+                  onCellClick={(evaluation, dateStr) => {
+                    if (dateStr) setSelectedDate(dateStr);
+                    if (evaluation) {
+                      setActiveEvaluation(evaluation);
+                      setShowEvaluationModal(true);
+                    }
                   }}
                 />
-              </div>
-
-              {/* Column 3: Stats Gauge & Study Timer */}
-              <div className="space-y-6">
-                
-                {/* Score Widget */}
-                <div className="bg-white/80 dark:bg-slate-900/80 backdrop-blur-md p-6 rounded-[32px] border border-violet-100/50 dark:border-slate-800/80 shadow-md hover:shadow-lg transition-all duration-300 flex flex-col items-center justify-center text-center relative overflow-hidden">
-                  <h3 className="text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-4" style={{ fontFamily: 'Outfit, sans-serif', fontWeight: 'normal', fontSize: '15px' }}>
-                    Today's Productivity
-                  </h3>
-                  
-                  {todayEntry?.score ? (
-                    <div className="space-y-2">
-                      <div className="relative flex items-center justify-center">
-                        {/* Radial Gauge design */}
-                        <div className="w-24 h-24 rounded-full border-[8px] border-emerald-500/10 flex items-center justify-center text-3xl font-black text-emerald-600 dark:text-emerald-400">
-                          {todayEntry.score}
-                        </div>
-                        <div className="absolute -top-1 -right-1 text-2xl animate-bounce">{todayEntry.emoji}</div>
-                      </div>
-                      <p className="text-xs font-bold text-slate-700 dark:text-slate-200 mt-2">
-                        {todayEntry.evaluation?.summary.substring(0, 50)}...
-                      </p>
-                      <button
-                        onClick={() => {
-                          setActiveEvaluation(todayEntry.evaluation);
-                          setShowEvaluationModal(true);
-                        }}
-                        className="text-[10px] font-bold text-violet-500 hover:underline mt-1 block"
-                      >
-                        View Full AI Coaching Breakdown
-                      </button>
-                    </div>
-                  ) : (
-                    <div className="space-y-3 py-4">
-                      <div className="mx-auto w-12 h-12 rounded-full bg-slate-100 dark:bg-slate-800 flex items-center justify-center text-slate-400">
-                        <Sparkles className="w-6 h-6 animate-pulse" />
-                      </div>
-                      <div>
-                        <p className="text-xs font-bold text-slate-400 dark:text-slate-500">No score recorded today yet</p>
-                        <p className="text-[10px] text-slate-400 max-w-[160px] mx-auto mt-0.5">Write and press Evaluate above to unlock.</p>
-                      </div>
-                    </div>
-                  )}
-                </div>
-
               </div>
             </div>
           </div>
@@ -2372,17 +3578,65 @@ export default function App() {
                   </div>
                 </div>
 
+                {/* Pomodoro Time Selection Options */}
+                <div className="space-y-1.5">
+                  <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider block">
+                    Choose Focus Time:
+                  </label>
+                  <div className="grid grid-cols-4 gap-1 bg-slate-100 dark:bg-slate-800/80 p-1 rounded-2xl">
+                    {[15, 25, 45, 60].map(mins => {
+                      const isSelected = Math.round(timerInitialDuration / 60) === mins;
+                      return (
+                        <button
+                          key={mins}
+                          type="button"
+                          disabled={timerIsRunning}
+                          onClick={() => {
+                            setTimerInitialDuration(mins * 60);
+                            setTimerSeconds(mins * 60);
+                            setFocusedSecondsInCurrentSession(0);
+                            showToast(`Focus time set to ${mins} minutes`, 'info');
+                          }}
+                          className={`py-2 rounded-xl text-xs font-black transition-all ${
+                            isSelected
+                              ? 'bg-gradient-to-r from-violet-600 to-fuchsia-600 text-white shadow-sm'
+                              : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                          } ${timerIsRunning ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
+                        >
+                          {mins}m
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
                 <div className="text-center py-4 bg-slate-50 dark:bg-slate-800/40 rounded-2xl border border-slate-100 dark:border-slate-800">
                   <div className="text-4xl font-black text-slate-800 dark:text-white tracking-widest leading-none font-mono">
                     {Math.floor(timerSeconds / 60).toString().padStart(2, '0')}:
                     {(timerSeconds % 60).toString().padStart(2, '0')}
                   </div>
-                  <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider block mt-2">Target: 25 Min Deep Work</span>
+                  <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider block mt-2">
+                    Target: {Math.round(timerInitialDuration / 60)} Min Deep Work
+                  </span>
                 </div>
 
                 <div className="flex gap-2 justify-center">
                   <button
-                    onClick={() => setTimerIsRunning(!timerIsRunning)}
+                    onClick={() => {
+                      if (timerIsRunning) {
+                        // User is pausing
+                        setTimerIsRunning(false);
+                        if (focusedSecondsInCurrentSession >= 30) {
+                          setHasCompletedFocusPeriod(true);
+                          showToast('Focus session paused. Option to share cycles is now unlocked!', 'success');
+                        } else {
+                          showToast('Paused focus timer.', 'info');
+                        }
+                      } else {
+                        // User is starting
+                        setTimerIsRunning(true);
+                      }
+                    }}
                     className={`flex-1 py-3 rounded-2xl text-xs font-black text-white flex items-center justify-center gap-1.5 transition-all duration-200 cursor-pointer ${
                       timerIsRunning 
                         ? 'bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-400 hover:to-orange-400 border-b-4 border-orange-700 active:border-b-0' 
@@ -2392,10 +3646,28 @@ export default function App() {
                     {timerIsRunning ? <Pause className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5" />}
                     {timerIsRunning ? 'Pause' : 'Start Focus'}
                   </button>
+
+                  {/* Small Share Pomodoro Button on side of Start Focus/Pause (Visible when paused) */}
+                  {!timerIsRunning && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPomodoroShareCategory(selectedTimerCategory + ' & Deep Work');
+                        setShowPomodoroShareModal(true);
+                      }}
+                      className="px-3.5 bg-gradient-to-r from-rose-600 via-amber-500 to-violet-600 hover:from-rose-500 hover:to-violet-500 text-white rounded-2xl transition-all cursor-pointer shadow-md flex items-center justify-center gap-1.5 text-xs font-bold animate-pulse"
+                      title="Share Pomodoro Focus to Feed"
+                    >
+                      <Share2 className="w-4 h-4" />
+                      <span className="text-[11px] hidden sm:inline">Share</span>
+                    </button>
+                  )}
+
                   <button
                     onClick={() => {
                       setTimerIsRunning(false);
                       setTimerSeconds(timerInitialDuration);
+                      setFocusedSecondsInCurrentSession(0);
                     }}
                     className="px-3.5 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-2xl text-slate-600 dark:text-slate-300 transition-colors cursor-pointer"
                     title="Reset Timer"
@@ -2403,52 +3675,6 @@ export default function App() {
                     <RotateCcw className="w-4 h-4" />
                   </button>
                 </div>
-
-                {/* Today's Pomodoro Cycles Tracker & Creative Share */}
-                {(() => {
-                  const todaySessions = studySessions.filter(s => s.date === todayDateStr);
-                  const totalMins = todaySessions.reduce((acc, s) => acc + s.durationMinutes, 0);
-                  const cyclesCount = Math.max(0, Math.max(todaySessions.length, Math.floor(totalMins / 25)));
-
-                  return (
-                    <div className="p-4 bg-gradient-to-br from-rose-500/10 via-amber-500/10 to-violet-500/10 dark:from-rose-950/30 dark:via-amber-950/20 dark:to-violet-950/30 rounded-2xl border border-rose-200/80 dark:border-rose-900/50 space-y-3">
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-1.5">
-                          <span className="text-lg">🍅</span>
-                          <div>
-                            <h4 className="text-xs font-black text-slate-800 dark:text-white font-display">Today's Cycles</h4>
-                            <p className="text-[10px] text-rose-600 dark:text-rose-400 font-extrabold">{totalMins} Mins Focused Today</p>
-                          </div>
-                        </div>
-                        <span className="px-2.5 py-1 bg-rose-500 text-white rounded-full text-xs font-black shadow-sm">
-                          {cyclesCount} {cyclesCount === 1 ? 'Cycle' : 'Cycles'}
-                        </span>
-                      </div>
-
-                      <div className="flex items-center gap-1.5 overflow-x-auto py-1">
-                        {cyclesCount === 0 ? (
-                          <p className="text-[10px] text-slate-400 italic">No cycles completed today yet. Start a focus session!</p>
-                        ) : (
-                          Array.from({ length: Math.min(cyclesCount, 8) }).map((_, i) => (
-                            <span key={i} className="text-lg transform hover:scale-125 transition-transform cursor-default" title={`Cycle ${i + 1}`}>🍅</span>
-                          ))
-                        )}
-                      </div>
-
-                      <button
-                        onClick={() => {
-                          setPomodoroShareCategory(selectedTimerCategory + ' & Deep Work');
-                          setShowPomodoroShareModal(true);
-                        }}
-                        className="w-full py-2.5 px-3 bg-gradient-to-r from-rose-600 via-amber-500 to-violet-600 hover:from-rose-500 hover:to-violet-500 text-white font-black rounded-xl text-xs flex items-center justify-center gap-2 shadow-md hover:shadow-lg transition-all active:scale-95 cursor-pointer"
-                      >
-                        <Sparkles className="w-3.5 h-3.5 text-amber-200 animate-pulse" />
-                        <span>Share Cycles to Feed</span>
-                        <Share2 className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
-                  );
-                })()}
               </div>
 
               {/* TO DO LIST & USER INPUT */}
@@ -2481,13 +3707,19 @@ export default function App() {
 
                 {/* Primary User Task Entry Form */}
                 <form onSubmit={handleAddTodo} className="space-y-3 bg-slate-50/80 dark:bg-slate-800/50 p-4 rounded-2xl border border-slate-200/80 dark:border-slate-700/80">
-                  <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5">
-                    <input
-                      type="text"
+                  <div className="flex flex-col sm:flex-row items-stretch sm:items-start gap-2.5">
+                    <textarea
+                      rows={2}
                       value={newTodoText}
                       onChange={e => setNewTodoText(e.target.value)}
-                      placeholder="Write your task here..."
-                      className="flex-1 w-full px-4 py-2.5 bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-700 text-xs focus:outline-none focus:border-violet-500 text-slate-800 dark:text-white font-medium shadow-sm"
+                      placeholder="Write your task or detailed multi-step plan here (long tasks supported)..."
+                      className="flex-1 w-full px-4 py-2.5 bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-700 text-xs focus:outline-none focus:border-violet-500 text-slate-800 dark:text-white font-medium shadow-sm resize-y min-h-[44px]"
+                      onKeyDown={e => {
+                        if (e.key === 'Enter' && !e.shiftKey) {
+                          e.preventDefault();
+                          handleAddTodo(e);
+                        }
+                      }}
                     />
 
                     <div className="flex items-center gap-2 w-full sm:w-auto">
@@ -2572,10 +3804,10 @@ export default function App() {
                               : 'bg-white dark:bg-slate-800/90 border-slate-200/80 dark:border-slate-700/80 text-slate-800 dark:text-white shadow-sm hover:shadow-md hover:border-violet-300/80'
                           }`}
                         >
-                          <div className="flex items-center gap-3 flex-1 min-w-0">
+                          <div className="flex items-start gap-3 flex-1 min-w-0">
                             <button
                               onClick={() => handleToggleTodo(todo.id)}
-                              className={`w-5 h-5 rounded-lg flex items-center justify-center border transition-all cursor-pointer flex-shrink-0 ${
+                              className={`w-5 h-5 rounded-lg flex items-center justify-center border transition-all cursor-pointer flex-shrink-0 mt-0.5 ${
                                 todo.completed
                                   ? 'bg-emerald-500 border-emerald-500 text-white'
                                   : 'border-slate-300 dark:border-slate-600 hover:border-violet-500 bg-slate-50 dark:bg-slate-900'
@@ -2583,12 +3815,18 @@ export default function App() {
                             >
                               {todo.completed && <Check className="w-3.5 h-3.5 stroke-[3]" />}
                             </button>
-                            <span className="text-xs font-semibold truncate flex-1 min-w-0">{todo.text}</span>
-                            {todo.isAiGenerated && (
-                              <span className="px-2 py-0.5 bg-gradient-to-r from-amber-100 to-orange-100 dark:from-amber-950/80 dark:to-orange-950/80 text-amber-700 dark:text-amber-300 border border-amber-200/80 dark:border-amber-800/80 rounded-md text-[9px] font-black uppercase flex items-center gap-1 flex-shrink-0">
-                                <Sparkles className="w-2.5 h-2.5" /> AI
-                              </span>
-                            )}
+                            <div className="flex-1 min-w-0 space-y-1">
+                              <p className={`text-xs font-semibold leading-relaxed whitespace-pre-wrap break-words ${
+                                todo.completed ? 'line-through text-slate-400' : 'text-slate-800 dark:text-white'
+                              }`}>
+                                {todo.text}
+                              </p>
+                              {todo.isAiGenerated && (
+                                <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-gradient-to-r from-amber-100 to-orange-100 dark:from-amber-950/80 dark:to-orange-950/80 text-amber-700 dark:text-amber-300 border border-amber-200/80 dark:border-amber-800/80 rounded-md text-[9px] font-black uppercase">
+                                  <Sparkles className="w-2.5 h-2.5" /> AI Generated Task
+                                </span>
+                              )}
+                            </div>
                           </div>
 
                           <div className="flex items-center gap-2 flex-shrink-0">
@@ -2672,79 +3910,301 @@ export default function App() {
 
         {/* TAB 3: ANALYTICS INSIGHTS */}
         {currentTab === 'analytics' && (
-          <div className="p-6 md:p-8 space-y-6 max-w-5xl mx-auto w-full">
-            <div>
-              <h1 className="text-2xl font-black text-slate-900 dark:text-white font-display">Analytics Dashboard</h1>
-              <p className="text-xs text-slate-400 mt-0.5">Visually track your historical score trends, study logs, and habit insights.</p>
+          <div className="p-6 md:p-8 space-y-8 max-w-5xl mx-auto w-full animate-fade-in">
+            {/* Header */}
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-100 dark:border-slate-800 pb-4">
+              <div>
+                <div className="inline-flex items-center gap-1.5 px-3 py-1 bg-violet-500/10 border border-violet-500/20 rounded-full text-[10px] font-black text-violet-600 dark:text-violet-400 uppercase tracking-wider mb-1">
+                  <TrendingUp className="w-3.5 h-3.5" />
+                  <span>Personal Intelligence Engine</span>
+                </div>
+                <h1 className="text-2xl sm:text-3xl font-black text-slate-900 dark:text-white font-display">Analytics Dashboard</h1>
+                <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">Simple, visual insights into your daily reflection scores, study focus, and habit growth.</p>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <span className="text-[11px] font-extrabold text-slate-600 dark:text-slate-300 bg-white/80 dark:bg-slate-900/80 backdrop-blur-md px-3.5 py-2 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm flex items-center gap-2">
+                  <CalendarIcon className="w-3.5 h-3.5 text-violet-500" />
+                  <span>Last 30 Days</span>
+                </span>
+              </div>
             </div>
 
             {analyticsData ? (
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                
-                {/* Score Chart */}
-                <div className="bg-white/80 dark:bg-slate-900/80 backdrop-blur-md p-6 rounded-[32px] border border-violet-100/50 dark:border-slate-800/80 shadow-md hover:shadow-lg transition-all duration-300 space-y-4">
-                  <h3 className="text-xs font-black uppercase tracking-wider text-slate-400 mb-2 font-display">Productivity Score Trend</h3>
-                  <div className="h-64">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <LineChart data={analyticsData.dailyScores}>
-                        <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
-                        <XAxis dataKey="date" stroke="#94a3b8" fontSize={11} />
-                        <YAxis stroke="#94a3b8" fontSize={11} domain={[0, 100]} />
-                        <ChartTooltip />
-                        <Line type="monotone" dataKey="score" stroke="#a855f7" strokeWidth={3} dot={{ r: 5 }} activeDot={{ r: 8 }} />
-                      </LineChart>
-                    </ResponsiveContainer>
-                  </div>
-                </div>
+              <div className="space-y-8">
+                {/* --- TOP 4 KPI METRICS CARDS --- */}
+                {(() => {
+                  const totalCategoryMins = analyticsData.radarData.reduce((acc, curr) => acc + curr.minutes, 0) || 1;
+                  const sortedCategories = [...analyticsData.radarData].sort((a, b) => b.minutes - a.minutes);
+                  const topCat = sortedCategories[0] || { subject: 'General Study', minutes: 60 };
+                  const COLORS = ['#8b5cf6', '#ec4899', '#10b981', '#f59e0b', '#06b6d4', '#6366f1'];
 
-                {/* Weekly Trend (Bar) */}
-                <div className="bg-white/80 dark:bg-slate-900/80 backdrop-blur-md p-6 rounded-[32px] border border-violet-100/50 dark:border-slate-800/80 shadow-md hover:shadow-lg transition-all duration-300 space-y-4">
-                  <h3 className="text-xs font-black uppercase tracking-wider text-slate-400 mb-2 font-display">Weekly Study Block Volume</h3>
-                  <div className="h-64">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <BarChart data={analyticsData.weeklyTrends}>
-                        <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
-                        <XAxis dataKey="week" stroke="#94a3b8" fontSize={11} />
-                        <YAxis stroke="#94a3b8" fontSize={11} />
-                        <ChartTooltip />
-                        <Bar dataKey="studyHours" fill="#ec4899" radius={[4, 4, 0, 0]} />
-                      </BarChart>
-                    </ResponsiveContainer>
-                  </div>
-                </div>
+                  return (
+                    <>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                        {/* KPI 1: Average Score */}
+                        <div className="p-5 bg-gradient-to-br from-violet-500/10 via-fuchsia-500/5 to-white dark:to-slate-900 rounded-[28px] border border-violet-200/60 dark:border-violet-900/50 shadow-md flex flex-col justify-between space-y-3">
+                          <div className="flex items-center justify-between">
+                            <span className="text-[10px] font-black uppercase tracking-wider text-violet-600 dark:text-violet-400 font-display">Average Day Score</span>
+                            <div className="w-8 h-8 rounded-xl bg-violet-500/15 text-violet-600 dark:text-violet-400 flex items-center justify-center">
+                              <Sparkles className="w-4 h-4" />
+                            </div>
+                          </div>
+                          <div>
+                            <div className="text-3xl font-black text-slate-900 dark:text-white font-display flex items-baseline gap-1">
+                              <span>{currentUser.stats.averageScore || 75}%</span>
+                            </div>
+                            <span className="inline-block mt-1 px-2.5 py-0.5 bg-violet-500/10 text-violet-700 dark:text-violet-300 rounded-full text-[10px] font-bold">
+                              {currentUser.stats.averageScore >= 80 ? '🔥 High Flow' : '✨ Solid Progress'}
+                            </span>
+                          </div>
+                        </div>
 
-                {/* Radar Chart for Focus Distribution */}
-                <div className="bg-white/80 dark:bg-slate-900/80 backdrop-blur-md p-6 rounded-[32px] border border-violet-100/50 dark:border-slate-800/80 shadow-md hover:shadow-lg transition-all duration-300 space-y-4">
-                  <h3 className="text-xs font-black uppercase tracking-wider text-slate-400 mb-2 font-display">Focus Topic Distribution (Minutes)</h3>
-                  <div className="h-64">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <RadarChart cx="50%" cy="50%" outerRadius="80%" data={analyticsData.radarData}>
-                        <PolarGrid stroke="#e2e8f0" />
-                        <PolarAngleAxis dataKey="subject" stroke="#94a3b8" fontSize={11} />
-                        <PolarRadiusAxis stroke="#94a3b8" fontSize={11} />
-                        <Radar name="Minutes Studied" dataKey="minutes" stroke="#a855f7" fill="#c084fc" fillOpacity={0.3} />
-                      </RadarChart>
-                    </ResponsiveContainer>
-                  </div>
-                </div>
+                        {/* KPI 2: Total Focus Time */}
+                        <div className="p-5 bg-gradient-to-br from-emerald-500/10 via-teal-500/5 to-white dark:to-slate-900 rounded-[28px] border border-emerald-200/60 dark:border-emerald-900/50 shadow-md flex flex-col justify-between space-y-3">
+                          <div className="flex items-center justify-between">
+                            <span className="text-[10px] font-black uppercase tracking-wider text-emerald-600 dark:text-emerald-400 font-display">Total Focus Time</span>
+                            <div className="w-8 h-8 rounded-xl bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 flex items-center justify-center">
+                              <Timer className="w-4 h-4" />
+                            </div>
+                          </div>
+                          <div>
+                            <div className="text-3xl font-black text-slate-900 dark:text-white font-display">
+                              {currentUser.stats.totalStudyHours || 0}h
+                            </div>
+                            <p className="text-[10px] font-bold text-emerald-700 dark:text-emerald-400 mt-1">
+                              Logged in study sessions
+                            </p>
+                          </div>
+                        </div>
 
-                {/* Stats Summary cards */}
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="bg-white/80 dark:bg-slate-900/80 backdrop-blur-md p-6 rounded-[32px] border border-violet-100/50 dark:border-slate-800/80 shadow-md flex flex-col justify-center">
-                    <span className="text-xs text-slate-400 font-bold uppercase tracking-wider font-display">Average Productivity</span>
-                    <span className="text-3xl font-black text-violet-600 dark:text-violet-400 mt-2">{currentUser.stats.averageScore}%</span>
-                  </div>
-                  <div className="bg-white/80 dark:bg-slate-900/80 backdrop-blur-md p-6 rounded-[32px] border border-violet-100/50 dark:border-slate-800/80 shadow-md flex flex-col justify-center">
-                    <span className="text-xs text-slate-400 font-bold uppercase tracking-wider font-display">Total Study Time</span>
-                    <span className="text-3xl font-black text-fuchsia-600 dark:text-fuchsia-400 mt-2">{currentUser.stats.totalStudyHours}h</span>
-                  </div>
-                </div>
+                        {/* KPI 3: Streak Consistency */}
+                        <div className="p-5 bg-gradient-to-br from-amber-500/10 via-orange-500/5 to-white dark:to-slate-900 rounded-[28px] border border-amber-200/60 dark:border-amber-900/50 shadow-md flex flex-col justify-between space-y-3">
+                          <div className="flex items-center justify-between">
+                            <span className="text-[10px] font-black uppercase tracking-wider text-amber-600 dark:text-amber-400 font-display">Reflection Streak</span>
+                            <div className="w-8 h-8 rounded-xl bg-amber-500/15 text-amber-600 dark:text-amber-400 flex items-center justify-center">
+                              <Flame className="w-4 h-4" />
+                            </div>
+                          </div>
+                          <div>
+                            <div className="text-3xl font-black text-slate-900 dark:text-white font-display flex items-center gap-1.5">
+                              <span>{currentUser.stats.currentStreak || 0} Days</span>
+                              <span className="text-xl">🔥</span>
+                            </div>
+                            <p className="text-[10px] font-bold text-amber-700 dark:text-amber-400 mt-1">
+                              Record: {currentUser.stats.longestStreak || 0} days
+                            </p>
+                          </div>
+                        </div>
+
+                        {/* KPI 4: Primary Subject */}
+                        <div className="p-5 bg-gradient-to-br from-blue-500/10 via-indigo-500/5 to-white dark:to-slate-900 rounded-[28px] border border-blue-200/60 dark:border-blue-900/50 shadow-md flex flex-col justify-between space-y-3">
+                          <div className="flex items-center justify-between">
+                            <span className="text-[10px] font-black uppercase tracking-wider text-blue-600 dark:text-blue-400 font-display">Top Focus Topic</span>
+                            <div className="w-8 h-8 rounded-xl bg-blue-500/15 text-blue-600 dark:text-blue-400 flex items-center justify-center">
+                              <BookOpen className="w-4 h-4" />
+                            </div>
+                          </div>
+                          <div>
+                            <div className="text-lg font-black text-slate-900 dark:text-white font-display truncate">
+                              {topCat.subject}
+                            </div>
+                            <p className="text-[10px] font-bold text-blue-700 dark:text-blue-400 mt-1">
+                              {topCat.minutes} Mins Focused
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* AI DayScore Coach Smart Insights Card */}
+                      <div className="p-5 bg-gradient-to-r from-violet-600 via-indigo-600 to-fuchsia-600 rounded-[28px] text-white shadow-xl flex items-start gap-4">
+                        <div className="w-10 h-10 rounded-2xl bg-white/20 backdrop-blur-md flex items-center justify-center text-xl shrink-0 mt-0.5">
+                          💡
+                        </div>
+                        <div className="space-y-1">
+                          <h4 className="text-xs font-black font-display uppercase tracking-wider text-amber-200">AI Productivity Coach Insights</h4>
+                          <p className="text-xs font-medium text-white/95 leading-relaxed">
+                            {currentUser.stats.averageScore >= 80 
+                              ? "Outstanding consistency! Your reflections show strong goal alignment and disciplined focus blocks. Maintain your current study rhythm."
+                              : "You are building great momentum! To boost your daily score above 80%, try scheduling your hardest study session early in the morning before distractions."
+                            }
+                          </p>
+                        </div>
+                      </div>
+
+                      {/* --- CHARTS ROW 1 --- */}
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        
+                        {/* CHART 1: Daily Score Trend (Area Chart) */}
+                        <div className="bg-white/80 dark:bg-slate-900/80 backdrop-blur-md p-6 rounded-[32px] border border-violet-100/60 dark:border-slate-800/80 shadow-md space-y-4">
+                          <div>
+                            <span className="text-[10px] font-black uppercase tracking-wider text-violet-600 dark:text-violet-400 font-display">Score Graph</span>
+                            <h3 className="text-sm font-black text-slate-900 dark:text-white font-display">Daily Productivity Score Trend</h3>
+                            <p className="text-[11px] text-slate-400 mt-0.5">Evaluated out of 100 based on your daily reflections.</p>
+                          </div>
+
+                          <div className="h-64 pt-2">
+                            <ResponsiveContainer width="100%" height="100%">
+                              <AreaChart data={analyticsData.dailyScores}>
+                                <defs>
+                                  <linearGradient id="scoreColor" x1="0" y1="0" x2="0" y2="1">
+                                    <stop offset="5%" stopColor="#8b5cf6" stopOpacity={0.4}/>
+                                    <stop offset="95%" stopColor="#ec4899" stopOpacity={0.0}/>
+                                  </linearGradient>
+                                </defs>
+                                <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" vertical={false} />
+                                <XAxis dataKey="date" stroke="#94a3b8" fontSize={11} tickLine={false} />
+                                <YAxis stroke="#94a3b8" fontSize={11} domain={[0, 100]} tickLine={false} axisLine={false} />
+                                <ChartTooltip
+                                  content={({ active, payload }) => {
+                                    if (active && payload && payload.length) {
+                                      const data = payload[0].payload;
+                                      return (
+                                        <div className="p-3 bg-slate-900 text-white rounded-2xl shadow-xl border border-slate-800 text-xs font-bold space-y-1">
+                                          <div className="flex items-center gap-1.5 text-amber-300">
+                                            <span>{data.emoji || '🙂'}</span>
+                                            <span>Date: {data.date}</span>
+                                          </div>
+                                          <p className="text-sm font-black text-violet-400">Score: {data.score}/100</p>
+                                          <p className="text-[10px] text-slate-400 font-normal">
+                                            {data.score >= 80 ? '🔥 Exceptional Focus' : data.score >= 60 ? '✨ Good Progress' : '⚡ Needs Focus'}
+                                          </p>
+                                        </div>
+                                      );
+                                    }
+                                    return null;
+                                  }}
+                                />
+                                <Area type="monotone" dataKey="score" stroke="#8b5cf6" strokeWidth={3} fillOpacity={1} fill="url(#scoreColor)" />
+                              </AreaChart>
+                            </ResponsiveContainer>
+                          </div>
+                        </div>
+
+                        {/* CHART 2: Weekly Study Volume (Rounded Bar Chart) */}
+                        <div className="bg-white/80 dark:bg-slate-900/80 backdrop-blur-md p-6 rounded-[32px] border border-violet-100/60 dark:border-slate-800/80 shadow-md space-y-4">
+                          <div>
+                            <span className="text-[10px] font-black uppercase tracking-wider text-fuchsia-600 dark:text-fuchsia-400 font-display">Time Graph</span>
+                            <h3 className="text-sm font-black text-slate-900 dark:text-white font-display">Weekly Study Hours Volume</h3>
+                            <p className="text-[11px] text-slate-400 mt-0.5">Total focus hours logged in study sessions per week.</p>
+                          </div>
+
+                          <div className="h-64 pt-2">
+                            <ResponsiveContainer width="100%" height="100%">
+                              <BarChart data={analyticsData.weeklyTrends}>
+                                <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" vertical={false} />
+                                <XAxis dataKey="week" stroke="#94a3b8" fontSize={11} tickLine={false} />
+                                <YAxis stroke="#94a3b8" fontSize={11} tickLine={false} axisLine={false} />
+                                <ChartTooltip
+                                  content={({ active, payload }) => {
+                                    if (active && payload && payload.length) {
+                                      const data = payload[0].payload;
+                                      return (
+                                        <div className="p-3 bg-slate-900 text-white rounded-2xl shadow-xl border border-slate-800 text-xs font-bold space-y-1">
+                                          <p className="text-fuchsia-400 font-black">{data.week}</p>
+                                          <p className="text-xs font-bold text-white">{data.studyHours} Focus Hours</p>
+                                          <p className="text-[10px] text-slate-400 font-normal">Avg Score: {data.score}%</p>
+                                        </div>
+                                      );
+                                    }
+                                    return null;
+                                  }}
+                                />
+                                <Bar dataKey="studyHours" fill="#ec4899" radius={[10, 10, 0, 0]} />
+                              </BarChart>
+                            </ResponsiveContainer>
+                          </div>
+                        </div>
+
+                      </div>
+
+                      {/* --- CHARTS ROW 2: Subject Donut Breakdown & Progress Bar Share --- */}
+                      <div className="bg-white/80 dark:bg-slate-900/80 backdrop-blur-md p-6 rounded-[32px] border border-violet-100/60 dark:border-slate-800/80 shadow-md space-y-6">
+                        <div>
+                          <span className="text-[10px] font-black uppercase tracking-wider text-emerald-600 dark:text-emerald-400 font-display">Subject Allocation</span>
+                          <h3 className="text-sm font-black text-slate-900 dark:text-white font-display">Study Focus Topic Breakdown</h3>
+                          <p className="text-[11px] text-slate-400 mt-0.5">See exactly where your study time went across different subjects.</p>
+                        </div>
+
+                        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 items-center">
+                          {/* Donut Chart */}
+                          <div className="lg:col-span-1 h-56 flex items-center justify-center">
+                            <ResponsiveContainer width="100%" height="100%">
+                              <PieChart>
+                                <Pie
+                                  data={sortedCategories}
+                                  dataKey="minutes"
+                                  nameKey="subject"
+                                  cx="50%"
+                                  cy="50%"
+                                  innerRadius={50}
+                                  outerRadius={80}
+                                  paddingAngle={4}
+                                >
+                                  {sortedCategories.map((entry, index) => (
+                                    <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                                  ))}
+                                </Pie>
+                                <ChartTooltip
+                                  content={({ active, payload }) => {
+                                    if (active && payload && payload.length) {
+                                      const data = payload[0].payload;
+                                      return (
+                                        <div className="p-3 bg-slate-900 text-white rounded-2xl shadow-xl border border-slate-800 text-xs font-bold space-y-1">
+                                          <p className="text-emerald-400 font-black">{data.subject}</p>
+                                          <p className="text-xs font-bold text-white">{data.minutes} Minutes Studied</p>
+                                          <p className="text-[10px] text-slate-400 font-normal">
+                                            {Math.round((data.minutes / totalCategoryMins) * 100)}% of total study time
+                                          </p>
+                                        </div>
+                                      );
+                                    }
+                                    return null;
+                                  }}
+                                />
+                              </PieChart>
+                            </ResponsiveContainer>
+                          </div>
+
+                          {/* Subject Progress Bars */}
+                          <div className="lg:col-span-2 space-y-3">
+                            {sortedCategories.map((cat, idx) => {
+                              const pct = Math.round((cat.minutes / totalCategoryMins) * 100);
+                              const barColor = COLORS[idx % COLORS.length];
+
+                              return (
+                                <div key={cat.subject} className="space-y-1.5 p-3 bg-slate-50 dark:bg-slate-800/40 rounded-2xl border border-slate-100 dark:border-slate-800">
+                                  <div className="flex items-center justify-between text-xs">
+                                    <div className="flex items-center gap-2 font-bold text-slate-800 dark:text-white">
+                                      <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: barColor }}></span>
+                                      <span>{cat.subject}</span>
+                                    </div>
+                                    <div className="flex items-center gap-2">
+                                      <span className="font-mono font-bold text-slate-600 dark:text-slate-300">{cat.minutes} Mins</span>
+                                      <span className="text-[10px] font-black px-2 py-0.5 rounded-full text-white" style={{ backgroundColor: barColor }}>
+                                        {pct}%
+                                      </span>
+                                    </div>
+                                  </div>
+                                  <div className="w-full h-2 bg-slate-200 dark:bg-slate-700 rounded-full overflow-hidden">
+                                    <div className="h-full rounded-full transition-all duration-500" style={{ width: `${pct}%`, backgroundColor: barColor }}></div>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      </div>
+
+                    </>
+                  );
+                })()}
 
               </div>
             ) : (
-              <div className="p-12 text-center text-slate-400 bg-white/80 dark:bg-slate-900/80 backdrop-blur-md rounded-[32px] border border-violet-100/50 dark:border-slate-800">
+              <div className="p-12 text-center text-slate-400 bg-white/80 dark:bg-slate-900/80 backdrop-blur-md rounded-[32px] border border-violet-100/50 dark:border-slate-800 space-y-2">
                 <TrendingUp className="w-8 h-8 mx-auto animate-bounce text-violet-500" />
-                <p className="mt-2 text-xs font-bold">Assembling productivity matrices...</p>
+                <p className="text-xs font-bold text-slate-700 dark:text-slate-300">Assembling personal analytics & performance graphs...</p>
               </div>
             )}
           </div>
@@ -2752,286 +4212,779 @@ export default function App() {
 
         {/* TAB 4: STUDENT SOCIAL FEED */}
         {currentTab === 'social' && (
-          <div className="p-6 md:p-8 space-y-6 max-w-2xl mx-auto w-full">
-            <div>
-              <h1 className="text-2xl font-black text-slate-900 dark:text-white font-display">Student Social Feed</h1>
-              <p className="text-xs text-slate-400 mt-0.5">Celebrate streaks, study milestones, and daily scores with classmates.</p>
+          <div className="p-4 sm:p-6 md:p-8 space-y-6 max-w-3xl mx-auto w-full animate-fade-in">
+            {/* --- COMPACT & SLEEK ANIMATED FEED TAB SWITCHER (PUBLIC vs FRIENDS) --- */}
+            <div className="relative p-1.5 bg-slate-900/90 dark:bg-slate-900/90 backdrop-blur-xl rounded-2xl border border-violet-500/25 dark:border-slate-800 shadow-lg flex items-center gap-1.5 overflow-hidden">
+              {/* Subtle ambient gradient overlay */}
+              <div className="absolute inset-0 bg-gradient-to-r from-violet-600/10 via-fuchsia-600/10 to-indigo-600/10 pointer-events-none" />
+
+              {/* Public Section Button */}
+              <motion.button
+                type="button"
+                whileHover={{ scale: 1.01 }}
+                whileTap={{ scale: 0.97 }}
+                onClick={() => setFeedTab('public')}
+                className={`relative flex-1 py-2 px-3 sm:px-4 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center justify-center gap-2 overflow-hidden group ${
+                  feedTab === 'public'
+                    ? 'text-white shadow-md shadow-violet-500/20'
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                {feedTab === 'public' && (
+                  <motion.div
+                    layoutId="activeFeedTabBg"
+                    className="absolute inset-0 bg-gradient-to-r from-violet-600 via-indigo-600 to-purple-600 rounded-xl -z-10 shadow-sm"
+                    transition={{ type: 'spring', stiffness: 500, damping: 32 }}
+                  />
+                )}
+                <div className={`p-1 rounded-lg transition-colors ${
+                  feedTab === 'public' ? 'bg-white/20 text-white' : 'bg-slate-800/80 text-slate-400 group-hover:text-violet-400'
+                }`}>
+                  <Globe className="w-3.5 h-3.5" />
+                </div>
+                <span className="font-display tracking-tight text-xs">Public Feed</span>
+                <span className={`px-1.5 py-0.2 rounded-full text-[9px] font-extrabold tracking-wider transition-colors ${
+                  feedTab === 'public' 
+                    ? 'bg-white/25 text-white border border-white/20' 
+                    : 'bg-slate-800 text-slate-400 border border-slate-700/80'
+                }`}>
+                  {posts.filter(p => !p.audience || p.audience === 'public').length}
+                </span>
+              </motion.button>
+
+              {/* Friends Section Button */}
+              <motion.button
+                type="button"
+                whileHover={{ scale: 1.01 }}
+                whileTap={{ scale: 0.97 }}
+                onClick={() => setFeedTab('friends')}
+                className={`relative flex-1 py-2 px-3 sm:px-4 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center justify-center gap-2 overflow-hidden group ${
+                  feedTab === 'friends'
+                    ? 'text-white shadow-md shadow-fuchsia-500/20'
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                {feedTab === 'friends' && (
+                  <motion.div
+                    layoutId="activeFeedTabBg"
+                    className="absolute inset-0 bg-gradient-to-r from-fuchsia-600 via-pink-600 to-rose-600 rounded-xl -z-10 shadow-sm"
+                    transition={{ type: 'spring', stiffness: 500, damping: 32 }}
+                  />
+                )}
+                <div className={`p-1 rounded-lg transition-colors ${
+                  feedTab === 'friends' ? 'bg-white/20 text-white' : 'bg-slate-800/80 text-slate-400 group-hover:text-fuchsia-400'
+                }`}>
+                  <Users className="w-3.5 h-3.5" />
+                </div>
+                <span className="font-display tracking-tight text-xs">Friends Feed</span>
+                <span className={`px-1.5 py-0.2 rounded-full text-[9px] font-extrabold tracking-wider transition-colors ${
+                  feedTab === 'friends' 
+                    ? 'bg-white/25 text-white border border-white/20' 
+                    : 'bg-slate-800 text-slate-400 border border-slate-700/80'
+                }`}>
+                  {posts.filter(p => {
+                    const isFriend = friendsList.some(f => f.email === p.authorEmail);
+                    const isOwn = p.authorEmail === currentUser?.email;
+                    return isFriend || isOwn;
+                  }).length}
+                </span>
+              </motion.button>
             </div>
 
-            {/* Custom Post Creator */}
-            <div className="bg-white/80 dark:bg-slate-900/80 backdrop-blur-md p-5 rounded-[32px] border border-violet-100/50 dark:border-slate-800/80 shadow-md space-y-3">
-              <input
-                type="text"
-                placeholder="What did you learn today? Post a habit update..."
-                className="w-full px-4 py-3 bg-slate-50/50 dark:bg-slate-800/50 rounded-2xl focus:outline-none focus:border-violet-500 border border-slate-100 dark:border-slate-800 text-xs font-medium"
-                onKeyDown={e => {
-                  if (e.key === 'Enter') {
-                    handleCreateCustomPost((e.target as HTMLInputElement).value);
-                    (e.target as HTMLInputElement).value = '';
-                  }
-                }}
-              />
-              <p className="text-[10px] text-slate-400 text-right font-medium">Press Enter to share with classmates.</p>
+            {/* Sub-banner describing active feed section */}
+            <div className="flex items-center justify-between px-3.5 py-1.5 rounded-xl bg-white/50 dark:bg-slate-900/50 backdrop-blur-md border border-slate-200/50 dark:border-slate-800/60 text-[11px]">
+              <div className="flex items-center gap-1.5">
+                {feedTab === 'public' ? (
+                  <span className="flex h-1.5 w-1.5 relative">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-violet-400 opacity-75"></span>
+                    <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-violet-500"></span>
+                  </span>
+                ) : (
+                  <span className="flex h-1.5 w-1.5 relative">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-fuchsia-400 opacity-75"></span>
+                    <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-fuchsia-500"></span>
+                  </span>
+                )}
+                <span className="font-bold text-slate-700 dark:text-slate-300">
+                  {feedTab === 'public' ? 'Public Community Feed' : 'Classmates & Friends Feed'}
+                </span>
+              </div>
+              <span className="text-[10px] text-slate-400 font-medium hidden sm:inline">
+                {feedTab === 'public' 
+                  ? 'Showing public updates from all students' 
+                  : 'Showing updates from your connected classmates'}
+              </span>
             </div>
 
-            {/* Posts Feed */}
-            <div className="space-y-4">
-              {posts.map(post => (
-                <div key={post.id} className="bg-white/80 dark:bg-slate-900/80 backdrop-blur-md p-6 rounded-[32px] border border-violet-100/50 dark:border-slate-800/80 shadow-md space-y-4">
-                  
-                  {/* Post Header */}
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-3">
-                      <img src={post.authorAvatar} alt="avatar" className="w-10 h-10 rounded-full object-cover ring-2 ring-violet-500/10" />
-                      <div>
-                        <h4 className="text-xs font-black text-slate-800 dark:text-white leading-tight font-display">{post.authorName}</h4>
-                        <span className="text-[10px] text-slate-400">{new Date(post.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
-                      </div>
-                    </div>
-                    {post.authorEmail === currentUser.email && (
-                      <button 
-                        onClick={() => handleDeletePost(post.id)}
-                        className="p-1.5 text-slate-400 hover:text-rose-500 rounded-lg cursor-pointer"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
-                    )}
+            {/* --- CUSTOM POST CREATOR COMPOSER --- */}
+            <div className="bg-white/80 dark:bg-slate-900/80 backdrop-blur-xl p-5 sm:p-6 rounded-[32px] border border-violet-100/60 dark:border-slate-800/80 shadow-md space-y-4">
+              <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-slate-800">
+                <div className="flex items-center gap-2.5">
+                  <SafeAvatar src={currentUser?.avatarUrl} name={currentUser?.displayName} frame={currentUser?.frame} size="sm" />
+                  <div>
+                    <span className="text-xs font-black text-slate-900 dark:text-white font-display">Share Feed Update</span>
+                    <p className="text-[10px] text-slate-400">Log a learning goal or milestone for classmates</p>
                   </div>
+                </div>
 
-                  {/* Post Content */}
-                  <p className="text-xs leading-relaxed text-slate-700 dark:text-slate-300 font-semibold">
-                    {post.content}
-                  </p>
+                {/* Audience switch */}
+                <div className="relative flex items-center p-1 bg-slate-100 dark:bg-slate-800 rounded-2xl border border-slate-200/80 dark:border-slate-700/80">
+                  <button
+                    type="button"
+                    onClick={() => setPostAudience('public')}
+                    className={`relative z-10 px-3 py-1.5 rounded-xl text-[10px] font-black transition-all cursor-pointer flex items-center gap-1.5 ${
+                      postAudience === 'public'
+                        ? 'text-white'
+                        : 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                    }`}
+                  >
+                    {postAudience === 'public' && (
+                      <motion.div
+                        layoutId="composerAudiencePill"
+                        className="absolute inset-0 bg-violet-600 rounded-xl -z-10 shadow-xs"
+                        transition={{ type: 'spring', stiffness: 500, damping: 35 }}
+                      />
+                    )}
+                    <Globe className="w-3 h-3" />
+                    <span>Public</span>
+                  </button>
 
-                  {/* Post Stats/Metadata attachment block if present */}
-                  {post.type === 'journal_score' && post.metadata?.score && (
-                    <div className="flex items-center gap-3 p-3.5 rounded-2xl bg-emerald-500/10 border border-emerald-500/20">
-                      <span className="text-2xl">{post.metadata.emoji}</span>
-                      <div>
-                        <p className="text-xs font-black text-emerald-800 dark:text-emerald-300">Journal Reflection Scored</p>
-                        <p className="text-[10px] text-emerald-600 dark:text-emerald-400 font-extrabold">Productivity Rating: {post.metadata.score}/100</p>
+                  <button
+                    type="button"
+                    onClick={() => setPostAudience('friends')}
+                    className={`relative z-10 px-3 py-1.5 rounded-xl text-[10px] font-black transition-all cursor-pointer flex items-center gap-1.5 ${
+                      postAudience === 'friends'
+                        ? 'text-white'
+                        : 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                    }`}
+                  >
+                    {postAudience === 'friends' && (
+                      <motion.div
+                        layoutId="composerAudiencePill"
+                        className="absolute inset-0 bg-fuchsia-600 rounded-xl -z-10 shadow-xs"
+                        transition={{ type: 'spring', stiffness: 500, damping: 35 }}
+                      />
+                    )}
+                    <Users className="w-3 h-3" />
+                    <span>Friends Only</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Quick Template Tag Pills */}
+              <div className="flex items-center gap-1.5 overflow-x-auto pb-1 no-scrollbar">
+                <span className="text-[9px] font-extrabold text-slate-400 uppercase tracking-wider shrink-0">Quick Tag:</span>
+                {[
+                  { label: 'Study Goal', template: 'Today\'s Study Goal: Focused on master concepts & review exercises!' },
+                  { label: 'Streak Hit', template: `Streak Milestone: Celebrated my active reflection streak with ${currentUser?.stats?.currentStreak || 1} days!` },
+                  { label: 'Pomodoro Sprint', template: 'Deep Work Sprint: Finished high-intensity focus sessions today!' },
+                  { label: 'Score Victory', template: `Reflection Victory: High daily score achieved on DayScore!` }
+                ].map((tag) => (
+                  <button
+                    key={tag.label}
+                    type="button"
+                    onClick={() => setCustomPostText(tag.template)}
+                    className="px-2.5 py-1 bg-slate-100 dark:bg-slate-800/80 hover:bg-violet-500/10 hover:text-violet-600 text-slate-600 dark:text-slate-300 text-[10px] font-bold rounded-xl whitespace-nowrap transition-all cursor-pointer border border-slate-200/60 dark:border-slate-700/60 shrink-0"
+                  >
+                    {tag.label}
+                  </button>
+                ))}
+              </div>
+
+              {/* Composer Input Area */}
+              <div className="space-y-2">
+                <textarea
+                  rows={2}
+                  value={customPostText}
+                  onChange={e => setCustomPostText(e.target.value)}
+                  placeholder={`What did you accomplish or learn today? Sharing to ${postAudience === 'friends' ? 'friends feed' : 'public feed'}...`}
+                  className="w-full px-4 py-3 bg-slate-50/70 dark:bg-slate-800/50 rounded-2xl focus:outline-none focus:ring-2 focus:ring-violet-500/50 border border-slate-200/80 dark:border-slate-800 text-xs font-semibold text-slate-900 dark:text-white placeholder:text-slate-400 resize-none transition-all"
+                  onKeyDown={e => {
+                    if (e.key === 'Enter' && !e.shiftKey) {
+                      e.preventDefault();
+                      handleCreateCustomPost(customPostText, postAudience);
+                    }
+                  }}
+                />
+
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] text-slate-400 font-medium flex items-center gap-1">
+                    {postAudience === 'friends' ? (
+                      <span className="text-fuchsia-600 dark:text-fuchsia-400 font-extrabold flex items-center gap-1">
+                        <Users className="w-3 h-3" /> Visible to friends only
+                      </span>
+                    ) : (
+                      <span className="text-violet-600 dark:text-violet-400 font-extrabold flex items-center gap-1">
+                        <Globe className="w-3 h-3" /> Visible to public
+                      </span>
+                    )}
+                    • {customPostText.length} / 280 chars
+                  </span>
+
+                  <motion.button
+                    whileHover={{ scale: 1.02 }}
+                    whileTap={{ scale: 0.95 }}
+                    type="button"
+                    onClick={() => handleCreateCustomPost(customPostText, postAudience)}
+                    className="px-5 py-2.5 bg-gradient-to-r from-violet-600 via-fuchsia-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 text-white font-black rounded-2xl text-xs shadow-md transition-all cursor-pointer flex items-center gap-1.5"
+                  >
+                    <Send className="w-3.5 h-3.5" />
+                    <span>Post Update</span>
+                  </motion.button>
+                </div>
+              </div>
+            </div>
+
+            {/* --- FEED SEARCH & CATEGORY FILTER TOOLBAR --- */}
+            <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 bg-white/70 dark:bg-slate-900/70 backdrop-blur-md p-3 rounded-2xl border border-slate-200/60 dark:border-slate-800/80 shadow-xs">
+              
+              {/* Category Filter Pills */}
+              <div className="flex items-center gap-1 overflow-x-auto no-scrollbar">
+                {[
+                  { id: 'all', label: 'All Updates' },
+                  { id: 'journal_score', label: 'Scores' },
+                  { id: 'pomodoro', label: 'Pomodoro' },
+                  { id: 'study', label: 'Focus' },
+                ].map(cat => (
+                  <button
+                    key={cat.id}
+                    onClick={() => setFeedCategoryFilter(cat.id as any)}
+                    className={`px-3 py-1.5 rounded-xl text-[10px] font-black transition-all cursor-pointer whitespace-nowrap ${
+                      feedCategoryFilter === cat.id
+                        ? 'bg-violet-600 text-white shadow-xs'
+                        : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-700'
+                    }`}
+                  >
+                    {cat.label}
+                  </button>
+                ))}
+              </div>
+
+              {/* Feed Search Input */}
+              <div className="relative min-w-[180px]">
+                <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-2.5" />
+                <input
+                  type="text"
+                  value={feedSearchQuery}
+                  onChange={e => setFeedSearchQuery(e.target.value)}
+                  placeholder="Search feed..."
+                  className="w-full pl-8 pr-7 py-1.5 text-xs bg-slate-100 dark:bg-slate-800 rounded-xl focus:outline-none focus:ring-1 focus:ring-violet-500 border border-slate-200/60 dark:border-slate-700 text-slate-800 dark:text-white placeholder:text-slate-400"
+                />
+                {feedSearchQuery && (
+                  <button onClick={() => setFeedSearchQuery('')} className="absolute right-2.5 top-2 text-slate-400 hover:text-slate-600">
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* --- ANIMATED POSTS FEED STREAM --- */}
+            <div className="space-y-5">
+              {(() => {
+                const filteredPosts = posts.filter(post => {
+                  // Tab audience filter
+                  if (feedTab === 'public') {
+                    if (post.audience === 'friends') return false;
+                  } else {
+                    const isFriend = friendsList.some(f => f.email === post.authorEmail);
+                    const isOwnPost = post.authorEmail === currentUser?.email;
+                    if (!isFriend && !isOwnPost) return false;
+                  }
+
+                  // Category filter
+                  if (feedCategoryFilter !== 'all') {
+                    if (feedCategoryFilter === 'journal_score' && post.type !== 'journal_score') return false;
+                    if (feedCategoryFilter === 'pomodoro' && post.type !== 'pomodoro_summary') return false;
+                    if (feedCategoryFilter === 'study' && post.type !== 'study_session') return false;
+                  }
+
+                  // Keyword search
+                  if (feedSearchQuery.trim()) {
+                    const q = feedSearchQuery.toLowerCase();
+                    const matchContent = post.content?.toLowerCase().includes(q);
+                    const matchAuthor = post.authorName?.toLowerCase().includes(q);
+                    if (!matchContent && !matchAuthor) return false;
+                  }
+
+                  return true;
+                });
+
+                if (filteredPosts.length === 0) {
+                  return (
+                    <motion.div
+                      initial={{ opacity: 0, scale: 0.95 }}
+                      animate={{ opacity: 1, scale: 1 }}
+                      className="p-12 text-center bg-white/80 dark:bg-slate-900/80 backdrop-blur-xl rounded-[36px] border border-violet-100/60 dark:border-slate-800/80 shadow-md space-y-4"
+                    >
+                      <div className="w-16 h-16 rounded-3xl bg-violet-500/10 text-violet-600 dark:text-violet-400 flex items-center justify-center mx-auto">
+                        {feedTab === 'public' ? <Globe className="w-8 h-8" /> : <Users className="w-8 h-8" />}
                       </div>
-                    </div>
-                  )}
-
-                  {post.type === 'study_session' && post.metadata?.studyMinutes && (
-                    <div className="flex items-center gap-3 p-3.5 rounded-2xl bg-violet-500/10 border border-violet-500/20">
-                      <Timer className="w-5 h-5 text-violet-500" />
-                      <div>
-                        <p className="text-xs font-black text-violet-800 dark:text-violet-300 font-display">Pomodoro Focus Completed</p>
-                        <p className="text-[10px] text-violet-600 dark:text-violet-400 font-extrabold">{post.metadata.studyMinutes} Minutes • {post.metadata.studyCategory}</p>
-                      </div>
-                    </div>
-                  )}
-
-                  {post.type === 'pomodoro_summary' && (
-                    <div className="p-4 rounded-2xl bg-gradient-to-br from-rose-500/10 via-amber-500/10 to-violet-500/10 border border-rose-500/30 dark:border-rose-500/20 space-y-2">
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-2">
-                          <span className="text-xl">🍅</span>
-                          <div>
-                            <p className="text-xs font-black text-slate-800 dark:text-white font-display flex items-center gap-1.5">
-                              Pomodoro Mastery
-                              <span className="px-2 py-0.5 bg-rose-500 text-white rounded-full text-[9px] font-black uppercase">
-                                {post.metadata?.pomodoroCycles || 1} {post.metadata?.pomodoroCycles === 1 ? 'Cycle' : 'Cycles'}
-                              </span>
-                            </p>
-                            <p className="text-[10px] text-rose-600 dark:text-rose-400 font-extrabold mt-0.5">
-                              ⏱️ {post.metadata?.studyMinutes || 25} Mins Focused • {post.metadata?.studyCategory || 'Deep Work'}
-                            </p>
-                          </div>
-                        </div>
-                        <div className="flex items-center gap-1">
-                          {Array.from({ length: Math.min(post.metadata?.pomodoroCycles || 1, 8) }).map((_, i) => (
-                            <span key={i} className="text-sm transform hover:scale-125 transition-transform" title={`Cycle ${i + 1}`}>🍅</span>
-                          ))}
-                        </div>
-                      </div>
-                      {post.metadata?.note && (
-                        <p className="text-xs italic text-slate-600 dark:text-slate-300 bg-white/70 dark:bg-slate-900/70 p-2.5 rounded-xl border border-rose-100 dark:border-rose-950/40">
-                          "{post.metadata.note}"
+                      <div className="space-y-1">
+                        <p className="text-sm font-black text-slate-800 dark:text-white font-display">No updates match this view!</p>
+                        <p className="text-xs text-slate-400 max-w-sm mx-auto">
+                          {feedSearchQuery 
+                            ? `No feed posts found matching "${feedSearchQuery}".` 
+                            : feedTab === 'friends'
+                              ? 'No updates from your friends yet. Share a post to friends feed or add classmates!'
+                              : 'Be the first student to post a daily reflection, Pomodoro cycle, or study update!'}
                         </p>
-                      )}
-                    </div>
-                  )}
+                      </div>
+                      <button
+                        onClick={() => {
+                          setFeedCategoryFilter('all');
+                          setFeedSearchQuery('');
+                          window.scrollTo({ top: 0, behavior: 'smooth' });
+                        }}
+                        className="px-5 py-2.5 bg-gradient-to-r from-violet-600 to-fuchsia-600 text-white font-extrabold text-xs rounded-2xl shadow-md hover:shadow-lg transition-all cursor-pointer inline-flex items-center gap-1.5"
+                      >
+                        <Sparkles className="w-3.5 h-3.5" />
+                        <span>Post First Update</span>
+                      </button>
+                    </motion.div>
+                  );
+                }
 
-                  {/* Likes / Reactions Block */}
-                  <div className="flex items-center gap-3 pt-2 border-t border-slate-100/80 dark:border-slate-800">
-                    {['🔥', '🙌', '🎉', '🎓'].map(emoji => {
-                      const list = post.reactions?.[emoji] || [];
-                      const hasReacted = list.includes(currentUser.email);
+                return (
+                  <AnimatePresence mode="popLayout">
+                    {filteredPosts.map((post, index) => {
+                      const isCommentsOpen = expandedCommentsPostId === post.id;
+                      const commentsCount = post.comments?.length || 0;
+
                       return (
-                        <button
-                          key={emoji}
-                          onClick={() => handlePostReact(post.id, emoji)}
-                          className={`px-3 py-1.5 rounded-full text-xs font-bold flex items-center gap-1.5 border transition-all cursor-pointer ${
-                            hasReacted 
-                              ? 'bg-violet-500/10 border-violet-300 text-violet-600 dark:text-violet-400 font-extrabold' 
-                              : 'bg-slate-50/50 dark:bg-slate-800/40 border-slate-100/80 hover:bg-slate-100 dark:border-slate-800 text-slate-500 dark:text-slate-400'
-                          }`}
+                        <motion.div
+                          key={post.id}
+                          initial={{ opacity: 0, y: 18 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          exit={{ opacity: 0, scale: 0.95 }}
+                          transition={{ duration: 0.25, delay: Math.min(index * 0.05, 0.25), ease: "easeOut" }}
+                          className="bg-white/85 dark:bg-slate-900/85 backdrop-blur-xl p-6 rounded-[36px] border border-violet-100/60 dark:border-slate-800/80 shadow-md hover:shadow-xl transition-all duration-300 space-y-4 relative group"
                         >
-                          <span>{emoji}</span>
-                          <span>{list.length}</span>
-                        </button>
+                          {/* Post Card Glow accent */}
+                          <div className="absolute top-0 right-0 w-32 h-32 bg-gradient-to-br from-violet-500/5 via-fuchsia-500/5 to-transparent rounded-full blur-2xl pointer-events-none" />
+
+                          {/* Post Header */}
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-3">
+                              <SafeAvatar src={post.authorAvatar} name={post.authorName} size="md" status="online" />
+                              <div>
+                                <div className="flex items-center gap-2">
+                                  <h4 className="text-xs font-black text-slate-900 dark:text-white font-display leading-tight">{post.authorName}</h4>
+                                  <span className={`px-2 py-0.5 rounded-full text-[9px] font-black uppercase flex items-center gap-1 ${
+                                    post.audience === 'friends'
+                                      ? 'bg-fuchsia-500/10 text-fuchsia-600 dark:text-fuchsia-400 border border-fuchsia-500/20'
+                                      : 'bg-violet-500/10 text-violet-600 dark:text-violet-400 border border-violet-500/20'
+                                  }`}>
+                                    {post.audience === 'friends' ? <Users className="w-2.5 h-2.5" /> : <Globe className="w-2.5 h-2.5" />}
+                                    {post.audience === 'friends' ? 'Friends' : 'Public'}
+                                  </span>
+                                </div>
+                                <span className="text-[10px] text-slate-400 font-medium">
+                                  {new Date(post.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} • Verified Student
+                                </span>
+                              </div>
+                            </div>
+
+                            <button 
+                              onClick={() => handleDeletePost(post.id)}
+                              className="p-2 text-slate-400 hover:text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950/40 rounded-xl transition-colors cursor-pointer"
+                              title="Delete post"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </div>
+
+                          {/* Post Main Text Content */}
+                          <p className="text-xs sm:text-sm leading-relaxed text-slate-800 dark:text-slate-200 font-semibold whitespace-pre-wrap break-words">
+                            {post.content}
+                          </p>
+
+                          {/* Post Metadata Attachment Cards */}
+                          {post.type === 'journal_score' && post.metadata?.score && (
+                            <div className="flex items-center justify-between p-4 rounded-2xl bg-gradient-to-r from-emerald-500/10 via-teal-500/10 to-emerald-500/5 border border-emerald-500/30 dark:border-emerald-500/20 shadow-sm">
+                              <div className="flex items-center gap-3">
+                                <span className="text-3xl">{post.metadata.emoji || '🙂'}</span>
+                                <div>
+                                  <p className="text-xs font-black text-emerald-900 dark:text-emerald-300 font-display">Daily Reflection Logged</p>
+                                  <p className="text-[10px] text-emerald-600 dark:text-emerald-400 font-extrabold mt-0.5">
+                                    Productivity Rating: {post.metadata.score} / 100
+                                  </p>
+                                </div>
+                              </div>
+                              <div className="px-3.5 py-1.5 bg-emerald-500 text-white rounded-xl text-xs font-black shadow-md">
+                                {post.metadata.score}%
+                              </div>
+                            </div>
+                          )}
+
+                          {post.type === 'study_session' && post.metadata?.studyMinutes && (
+                            <div className="flex items-center gap-3 p-4 rounded-2xl bg-gradient-to-r from-violet-500/10 via-indigo-500/10 to-violet-500/5 border border-violet-500/30 dark:border-violet-500/20 shadow-sm">
+                              <div className="w-10 h-10 rounded-xl bg-violet-600 text-white flex items-center justify-center shrink-0 shadow-md">
+                                <Timer className="w-5 h-5" />
+                              </div>
+                              <div>
+                                <p className="text-xs font-black text-violet-900 dark:text-violet-300 font-display">Study Focus Session</p>
+                                <p className="text-[10px] text-violet-600 dark:text-violet-400 font-extrabold mt-0.5">
+                                  ⏱️ {post.metadata.studyMinutes} Mins Focused • {post.metadata.studyCategory || 'Academic'}
+                                </p>
+                              </div>
+                            </div>
+                          )}
+
+                          {post.type === 'pomodoro_summary' && (
+                            <div className="p-4 rounded-2xl bg-gradient-to-br from-rose-500/10 via-amber-500/10 to-violet-500/10 border border-rose-500/30 dark:border-rose-500/20 space-y-2.5 shadow-sm">
+                              <div className="flex items-center justify-between">
+                                <div className="flex items-center gap-2.5">
+                                  <span className="text-2xl animate-bounce">🍅</span>
+                                  <div>
+                                    <p className="text-xs font-black text-slate-900 dark:text-white font-display flex items-center gap-1.5">
+                                      Pomodoro Focus Victory
+                                      <span className="px-2 py-0.5 bg-rose-500 text-white rounded-full text-[9px] font-black uppercase shadow-xs">
+                                        {post.metadata?.pomodoroCycles || 1} {post.metadata?.pomodoroCycles === 1 ? 'Cycle' : 'Cycles'}
+                                      </span>
+                                    </p>
+                                    <p className="text-[10px] text-rose-600 dark:text-rose-400 font-extrabold mt-0.5">
+                                      ⏱️ {post.metadata?.studyMinutes || 25} Mins Focused • {post.metadata?.studyCategory || 'Deep Work'}
+                                    </p>
+                                  </div>
+                                </div>
+                                <div className="flex items-center gap-1">
+                                  {Array.from({ length: Math.min(post.metadata?.pomodoroCycles || 1, 6) }).map((_, i) => (
+                                    <span key={i} className="text-base transform hover:scale-130 transition-transform">🍅</span>
+                                  ))}
+                                </div>
+                              </div>
+                              {post.metadata?.note && (
+                                <p className="text-xs italic text-slate-700 dark:text-slate-300 bg-white/80 dark:bg-slate-900/80 p-3 rounded-xl border border-rose-100 dark:border-rose-950/40 font-medium">
+                                  "{post.metadata.note}"
+                                </p>
+                              )}
+                            </div>
+                          )}
+
+                          {/* Interactive Animated Reaction Buttons Bar */}
+                          <div className="flex flex-wrap items-center justify-between gap-2 pt-3 border-t border-slate-100 dark:border-slate-800">
+                            
+                            {/* Reactions Cluster */}
+                            <div className="flex items-center gap-2 flex-wrap">
+                              {['🔥', '🙌', '🎉', '🎓', '❤️'].map(emoji => {
+                                const list = post.reactions?.[emoji] || [];
+                                const hasReacted = list.includes(currentUser?.email || '');
+                                return (
+                                  <motion.button
+                                    key={emoji}
+                                    whileTap={{ scale: 1.35, rotate: 8 }}
+                                    onClick={() => handlePostReact(post.id, emoji)}
+                                    className={`px-3 py-1.5 rounded-full text-xs font-bold flex items-center gap-1.5 border transition-all cursor-pointer ${
+                                      hasReacted 
+                                        ? 'bg-gradient-to-r from-violet-500/20 to-fuchsia-500/20 border-violet-400 text-violet-700 dark:text-violet-300 font-black shadow-xs ring-2 ring-violet-500/30' 
+                                        : 'bg-slate-50 dark:bg-slate-800/50 border-slate-200/80 hover:bg-slate-100 dark:border-slate-700/80 text-slate-600 dark:text-slate-400'
+                                    }`}
+                                  >
+                                    <span>{emoji}</span>
+                                    <span>{list.length}</span>
+                                  </motion.button>
+                                );
+                              })}
+                            </div>
+
+                            {/* Toggle Comments Drawer Button */}
+                            <button
+                              onClick={() => setExpandedCommentsPostId(isCommentsOpen ? null : post.id)}
+                              className="px-3 py-1.5 text-xs font-extrabold text-slate-500 dark:text-slate-400 hover:text-violet-600 dark:hover:text-violet-300 rounded-xl transition-colors flex items-center gap-1.5 cursor-pointer"
+                            >
+                              <MessageSquare className="w-3.5 h-3.5 text-violet-500" />
+                              <span>{commentsCount > 0 ? `${commentsCount} Comments` : 'Comment'}</span>
+                            </button>
+
+                          </div>
+
+                          {/* Expandable Comment Section */}
+                          {(isCommentsOpen || commentsCount > 0) && (
+                            <div className="space-y-3 pt-3 border-t border-slate-100 dark:border-slate-800/80">
+                              
+                              {/* Existing Comments list */}
+                              {commentsCount > 0 && (
+                                <div className="space-y-2 max-h-48 overflow-y-auto pr-1 custom-scrollbar">
+                                  {post.comments?.map(c => (
+                                    <div key={c.id} className="p-3 bg-slate-50/80 dark:bg-slate-800/50 rounded-2xl text-xs leading-relaxed space-y-0.5 border border-slate-100 dark:border-slate-800/60">
+                                      <div className="flex items-center justify-between">
+                                        <span className="font-extrabold text-slate-900 dark:text-white font-display">{c.authorName}</span>
+                                        <span className="text-[9px] text-slate-400">Classmate</span>
+                                      </div>
+                                      <p className="text-slate-700 dark:text-slate-300 font-medium">{c.text}</p>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+
+                              {/* Comment Input */}
+                              <div className="flex items-center gap-2">
+                                <SafeAvatar src={currentUser?.avatarUrl} name={currentUser?.displayName} size="xs" />
+                                <input
+                                  type="text"
+                                  placeholder="Write an encouraging comment..."
+                                  className="flex-1 px-4 py-2 text-xs bg-slate-100/80 dark:bg-slate-800/60 rounded-full focus:outline-none focus:ring-2 focus:ring-violet-500/50 border border-slate-200/60 dark:border-slate-700/60 text-slate-900 dark:text-white placeholder:text-slate-400 font-medium"
+                                  onKeyDown={e => {
+                                    if (e.key === 'Enter') {
+                                      const val = (e.target as HTMLInputElement).value;
+                                      if (val.trim()) {
+                                        handlePostComment(post.id, val);
+                                        (e.target as HTMLInputElement).value = '';
+                                        setExpandedCommentsPostId(post.id);
+                                      }
+                                    }
+                                  }}
+                                />
+                              </div>
+
+                            </div>
+                          )}
+
+                        </motion.div>
                       );
                     })}
-                  </div>
-
-                  {/* Comment List */}
-                  {post.comments && post.comments.length > 0 && (
-                    <div className="space-y-2 pt-2">
-                      {post.comments.map(c => (
-                        <div key={c.id} className="p-3 bg-slate-50/60 dark:bg-slate-800/40 rounded-2xl text-[11px] leading-relaxed">
-                          <span className="font-bold text-slate-800 dark:text-white mr-1.5">{c.authorName}</span>
-                          <span className="text-slate-600 dark:text-slate-300">{c.text}</span>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-
-                  {/* Write Comment Box */}
-                  <input
-                    type="text"
-                    placeholder="Write a comment..."
-                    className="w-full px-4 py-2.5 text-xs bg-slate-50/50 dark:bg-slate-800/30 rounded-xl focus:outline-none focus:border-violet-500 border border-slate-100 dark:border-slate-800/60"
-                    onKeyDown={e => {
-                      if (e.key === 'Enter') {
-                        handlePostComment(post.id, (e.target as HTMLInputElement).value);
-                        (e.target as HTMLInputElement).value = '';
-                      }
-                    }}
-                  />
-
-                </div>
-              ))}
+                  </AnimatePresence>
+                );
+              })()}
             </div>
           </div>
         )}
 
-        {/* TAB 5: CLASSROOM PRIVATE MESSAGING */}
+        {/* TAB 5: CLASSROOM PRIVATE MESSAGING (MESSENGER / INSTAGRAM DIRECT UI) */}
         {currentTab === 'chat' && (
-          <div className="flex h-[calc(100vh-80px)] md:h-screen overflow-hidden relative z-10">
+          <div className="flex h-[calc(100vh-80px)] md:h-screen overflow-hidden relative z-10 bg-slate-50/50 dark:bg-slate-950/40">
             
-            {/* Friends/Chat Rooms List */}
-            <div className="w-72 border-r border-slate-200/50 dark:border-slate-800/50 bg-white/75 dark:bg-slate-900/60 backdrop-blur-xl flex flex-col flex-shrink-0">
+            {/* Friends/Chat Rooms List Sidebar */}
+            <div className={`w-full lg:w-80 lg:w-96 border-r border-slate-200/60 dark:border-slate-800/60 bg-white/80 dark:bg-slate-900/80 backdrop-blur-2xl flex flex-col flex-shrink-0 transition-all duration-300 ${
+              activeRoomId ? 'hidden lg:flex' : 'flex w-full'
+            }`}>
+              
+              {/* Header */}
               <div className="p-4 border-b border-slate-100/80 dark:border-slate-800/80 space-y-3">
                 <div className="flex items-center justify-between">
-                  <h3 className="text-sm font-black text-slate-900 dark:text-white font-display">Classroom Chat</h3>
-                  <span className="text-[10px] text-fuchsia-500 font-bold uppercase tracking-wider">Simulated Study Groups</span>
+                  <div className="flex items-center gap-2">
+                    <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-fuchsia-600 via-pink-500 to-indigo-600 flex items-center justify-center text-white shadow-md shadow-pink-500/20">
+                      <MessageSquare className="w-4 h-4" />
+                    </div>
+                    <div>
+                      <h3 className="text-sm font-black text-slate-900 dark:text-white font-display tracking-tight flex items-center gap-1.5">
+                        Direct Messages
+                      </h3>
+                      <p className="text-[10px] text-slate-400 font-medium">Classmate Study Network</p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setShowQuickNotesModal(true)}
+                    className="px-2.5 py-1 bg-violet-500/10 hover:bg-violet-500/20 text-violet-600 dark:text-violet-300 border border-violet-200 dark:border-violet-800/60 rounded-full text-[9px] font-extrabold uppercase transition-all cursor-pointer flex items-center gap-1"
+                    title="Open Quick Notes & Cheat Sheets"
+                  >
+                    <FileText className="w-3 h-3 text-violet-500" />
+                    Quick Notes
+                  </button>
+                </div>
+
+                {/* Active Classmates Stories Row (Instagram / Messenger Active Now Bar) */}
+                <div className="pt-2">
+                  <span className="text-[9px] font-bold text-slate-400 uppercase tracking-wider block mb-3">Active Classmates & Status Notes</span>
+                  <div className="flex items-center gap-3 overflow-x-auto pb-2 no-scrollbar pt-4">
+                    {/* User's own note / status */}
+                    <div
+                      onClick={() => {
+                        setStatusNoteInput(userStatusNote);
+                        setShowStatusNoteModal(true);
+                      }}
+                      className="flex flex-col items-center flex-shrink-0 cursor-pointer group relative"
+                    >
+                      {/* Floating Speech Bubble for status note */}
+                      <div className="absolute -top-5 bg-gradient-to-r from-violet-600 to-fuchsia-600 text-white text-[8px] font-extrabold px-2 py-0.5 rounded-full whitespace-nowrap shadow-md max-w-[70px] truncate z-20 pointer-events-none ring-1 ring-white/30">
+                        {userStatusNote}
+                      </div>
+                      <div className="relative mt-1">
+                        <SafeAvatar src={currentUser?.avatarUrl} name={currentUser?.displayName || 'User'} frame={currentUser?.frame || 'none'} size="sm" />
+                        <div className="absolute -bottom-1 -right-1 w-4 h-4 rounded-full bg-violet-600 text-white flex items-center justify-center text-[10px] font-bold border-2 border-white dark:border-slate-900 shadow-xs z-10">
+                          +
+                        </div>
+                      </div>
+                      <span className="text-[9px] font-extrabold text-slate-700 dark:text-slate-300 mt-1 truncate w-14 text-center">Your note</span>
+                    </div>
+
+                    {/* Classmates with active story/online ring */}
+                    {friendsList.map(friend => {
+                      const room = chatRooms.find(r => r.peer?.email === friend.email);
+                      const isAi = friend.email === 'dayscore_ai@reflect.edu';
+                      const defaultNote = isAi ? 'Here to support ✨' : friend.email.includes('emma') ? 'Bio marathon 🩺' : friend.email.includes('lukas') ? 'Compilers 💻' : 'Reflecting 🌱';
+                      return (
+                        <button
+                          key={friend.email}
+                          onClick={() => {
+                            if (room) {
+                              setActiveRoomId(room.id);
+                              setChatMessages([]);
+                            } else {
+                              sendFriendRequest(friend.email);
+                            }
+                          }}
+                          className="flex flex-col items-center flex-shrink-0 cursor-pointer group relative"
+                        >
+                          <div className="absolute -top-5 bg-slate-800 dark:bg-slate-700 text-slate-100 text-[8px] font-bold px-2 py-0.5 rounded-full whitespace-nowrap shadow-xs max-w-[70px] truncate z-20 pointer-events-none">
+                            {defaultNote}
+                          </div>
+                          <div className="relative mt-1">
+                            <SafeAvatar src={friend.avatarUrl} name={friend.displayName} frame={friend.frame || 'none'} size="sm" />
+                            <div className="absolute bottom-0 right-0 w-3 h-3 rounded-full bg-emerald-500 border-2 border-white dark:border-slate-900 z-10" />
+                          </div>
+                          <span className="text-[9px] font-semibold text-slate-700 dark:text-slate-300 mt-1 truncate w-14 text-center">
+                            {friend.displayName.split(' ')[0]}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Search Bar */}
+                <div className="relative">
+                  <input
+                    type="text"
+                    value={userSearchQuery}
+                    onChange={(e) => {
+                      setUserSearchQuery(e.target.value);
+                      searchUsers(e.target.value);
+                    }}
+                    placeholder="Search messages or classmates..."
+                    className="w-full pl-8 pr-8 py-2 text-xs bg-slate-100/80 dark:bg-slate-800/60 rounded-xl focus:outline-none focus:ring-2 focus:ring-pink-500/50 border border-slate-200/60 dark:border-slate-700/60 text-slate-800 dark:text-white placeholder:text-slate-400 font-medium"
+                  />
+                  <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-2.5" />
+                  {userSearchQuery && (
+                    <button onClick={() => setUserSearchQuery('')} className="absolute right-2.5 top-2.5 text-slate-400 hover:text-slate-600">
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  )}
                 </div>
                 
                 {/* Switcher tabs */}
-                <div className="flex bg-slate-100/50 dark:bg-slate-800/50 p-1 rounded-xl">
+                <div className="flex bg-slate-100 dark:bg-slate-800 p-1 rounded-xl">
                   <button
                     onClick={() => setChatSidebarTab('chats')}
-                    className={`flex-1 text-center py-1.5 text-[10px] font-bold rounded-lg transition-all cursor-pointer ${
+                    className={`flex-1 text-center py-1.5 text-xs font-bold rounded-lg transition-all cursor-pointer ${
                       chatSidebarTab === 'chats'
-                        ? 'bg-white dark:bg-slate-900 text-violet-600 dark:text-violet-400 shadow-sm'
-                        : 'text-slate-500 dark:text-slate-400 hover:text-slate-700'
+                        ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-sm'
+                        : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'
                     }`}
                   >
-                    Active Chats
+                    Chats
                   </button>
                   <button
                     onClick={() => setChatSidebarTab('friends')}
-                    className={`flex-1 text-center py-1.5 text-[10px] font-bold rounded-lg transition-all cursor-pointer relative ${
+                    className={`flex-1 text-center py-1.5 text-xs font-bold rounded-lg transition-all cursor-pointer relative ${
                       chatSidebarTab === 'friends'
-                        ? 'bg-white dark:bg-slate-900 text-violet-600 dark:text-violet-400 shadow-sm'
-                        : 'text-slate-500 dark:text-slate-400 hover:text-slate-700'
+                        ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-sm'
+                        : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'
                     }`}
                   >
-                    Find Friends
+                    Classmates
                     {pendingRequests.length > 0 && (
-                      <span className="absolute -top-1 -right-1 flex h-2 w-2">
-                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-rose-400 opacity-75"></span>
-                        <span className="relative inline-flex rounded-full h-2 w-2 bg-rose-500"></span>
+                      <span className="ml-1.5 px-1.5 py-0.2 bg-rose-500 text-white rounded-full text-[9px]">
+                        {pendingRequests.length}
                       </span>
                     )}
                   </button>
                 </div>
               </div>
 
+              {/* Chat Sidebar Body */}
               {chatSidebarTab === 'chats' ? (
                 <div className="flex-1 overflow-y-auto p-2 space-y-1">
                   {chatRooms.length === 0 ? (
-                    <p className="text-[10px] text-slate-400 text-center p-4">No active chats yet. Find a friend to start chatting!</p>
+                    <div className="text-center p-6 space-y-2">
+                      <MessageSquare className="w-8 h-8 text-slate-300 dark:text-slate-700 mx-auto" />
+                      <p className="text-xs font-bold text-slate-500">No active chats</p>
+                      <p className="text-[10px] text-slate-400">Switch to Classmates tab to start a new conversation!</p>
+                    </div>
                   ) : (
-                    chatRooms.map(room => (
-                      <button
-                        key={room.id}
-                        onClick={() => {
-                          setActiveRoomId(room.id);
-                          setChatMessages([]);
-                        }}
-                        className={`w-full flex items-center gap-3 p-3 rounded-2xl transition-all duration-300 text-left ${
-                          activeRoomId === room.id 
-                            ? 'bg-gradient-to-r from-violet-500/10 to-fuchsia-500/10 border-l-4 border-violet-500 shadow-sm' 
-                            : 'hover:bg-slate-100/50 dark:hover:bg-slate-800/40 border-l-4 border-transparent'
-                        }`}
-                      >
-                        <div className="relative">
-                          <img src={room.peer?.avatarUrl} alt="peer" className="w-10 h-10 rounded-full object-cover ring-2 ring-violet-500/10" />
-                          <div className={`absolute bottom-0 right-0 w-3 h-3 rounded-full border-2 border-white dark:border-slate-900 ${
-                            room.peer?.online ? 'bg-emerald-500 animate-pulse' : 'bg-slate-300'
-                          }`} />
-                        </div>
-                        <div className="overflow-hidden w-full">
-                          <p className="text-xs font-black text-slate-800 dark:text-white truncate font-display">{room.peer?.displayName}</p>
-                          <p className="text-[10px] text-slate-400 truncate font-medium">
-                            {room.messages[room.messages.length - 1]?.text || 'No conversations yet.'}
-                          </p>
-                        </div>
-                      </button>
-                    ))
+                    chatRooms.map(room => {
+                      const isActive = activeRoomId === room.id;
+                      const lastMsg = room.messages[room.messages.length - 1];
+                      const isAiCoach = room.participants.includes('dayscore_ai@reflect.edu');
+                      return (
+                        <button
+                          key={room.id}
+                          onClick={() => {
+                            setActiveRoomId(room.id);
+                            setChatMessages([]);
+                          }}
+                          className={`w-full flex items-center gap-3 p-3 rounded-2xl transition-all duration-200 text-left cursor-pointer ${
+                            isAiCoach
+                              ? 'bg-gradient-to-r from-violet-600/15 via-fuchsia-600/10 to-indigo-600/15 border border-violet-400/50 dark:border-violet-600/50 shadow-md ring-1 ring-violet-500/30'
+                              : isActive 
+                              ? 'bg-gradient-to-r from-violet-500/15 via-fuchsia-500/10 to-indigo-500/15 border border-violet-300/40 dark:border-violet-700/40 shadow-sm' 
+                              : 'hover:bg-slate-100/80 dark:hover:bg-slate-800/50 border border-transparent'
+                          }`}
+                        >
+                          <div className="relative flex-shrink-0">
+                            <img src={room.peer?.avatarUrl} alt="peer" className={`w-11 h-11 rounded-full object-cover ring-2 ${isAiCoach ? 'ring-violet-500 ring-offset-2 dark:ring-offset-slate-900' : 'ring-slate-200/80 dark:ring-slate-700'}`} />
+                            <div className={`absolute bottom-0 right-0 w-3.5 h-3.5 rounded-full border-2 border-white dark:border-slate-900 ${
+                              room.peer?.online || isAiCoach ? 'bg-emerald-500' : 'bg-slate-300'
+                            }`} />
+                          </div>
+                          <div className="overflow-hidden flex-1 min-w-0">
+                            <div className="flex items-center justify-between gap-1">
+                              <div className="flex items-center gap-1.5 min-w-0">
+                                <p className="text-xs font-bold text-slate-900 dark:text-white truncate font-display">{room.peer?.displayName}</p>
+                                {isAiCoach && (
+                                  <span className="px-1.5 py-0.2 bg-gradient-to-r from-violet-600 to-fuchsia-600 text-white text-[8px] font-black rounded-full uppercase tracking-wider shrink-0">AI Coach</span>
+                                )}
+                              </div>
+                              {lastMsg && (
+                                <span className="text-[9px] text-slate-400 flex-shrink-0">
+                                  {new Date(lastMsg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                </span>
+                              )}
+                            </div>
+                            {isAiCoach && (
+                              <p className="text-[9px] font-bold text-violet-600 dark:text-violet-300 truncate">
+                                ⚡ Super Intelligent, Fast, Logical & Empathetic
+                              </p>
+                            )}
+                            <p className={`text-[11px] truncate mt-0.5 ${isActive ? 'text-violet-600 dark:text-violet-300 font-semibold' : 'text-slate-500 dark:text-slate-400'}`}>
+                              {lastMsg?.text || 'Tap to send a message...'}
+                            </p>
+                          </div>
+                        </button>
+                      );
+                    })
                   )}
                 </div>
               ) : (
+                /* Classmates Search & Requests List */
                 <div className="flex-1 flex flex-col overflow-hidden">
-                  {/* Search Input */}
-                  <div className="p-3 border-b border-slate-100/50 dark:border-slate-800/50 space-y-2">
-                    <div className="relative">
-                      <input
-                        type="text"
-                        value={userSearchQuery}
-                        onChange={(e) => {
-                          setUserSearchQuery(e.target.value);
-                          searchUsers(e.target.value);
-                        }}
-                        placeholder="Search classmates..."
-                        className="w-full pl-8 pr-3 py-2 text-[11px] bg-slate-50/50 dark:bg-slate-800/30 rounded-xl focus:outline-none focus:border-violet-500 border border-slate-150 dark:border-slate-850 font-medium text-slate-800 dark:text-white"
-                      />
-                      <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-2.5" />
-                    </div>
-                  </div>
-
-                  {/* Pending incoming requests */}
+                  {/* Requests */}
                   {pendingRequests.length > 0 && (
-                    <div className="p-3 border-b border-slate-150/50 dark:border-slate-850/50 space-y-2 bg-violet-50/20 dark:bg-violet-950/5">
-                      <span className="text-[9px] font-bold text-slate-400 uppercase tracking-wider block">Incoming Requests ({pendingRequests.length})</span>
+                    <div className="p-3 border-b border-slate-150/80 dark:border-slate-800/80 space-y-2 bg-pink-50/30 dark:bg-pink-950/20">
+                      <span className="text-[9px] font-bold text-pink-600 dark:text-pink-400 uppercase tracking-wider block">Friend Requests ({pendingRequests.length})</span>
                       <div className="space-y-2">
                         {pendingRequests.map(req => (
-                          <div key={req.fromEmail} className="flex items-center justify-between p-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800/50 shadow-sm">
+                          <div key={req.fromEmail} className="flex items-center justify-between p-2 rounded-xl bg-white dark:bg-slate-900 border border-pink-100 dark:border-pink-900/30 shadow-sm">
                             <div className="flex items-center gap-2 overflow-hidden">
-                              <img src={req.fromUser?.avatarUrl} alt="avatar" className="w-7 h-7 rounded-full object-cover" />
+                              <img src={req.fromUser?.avatarUrl} alt="avatar" className="w-8 h-8 rounded-full object-cover" />
                               <div className="overflow-hidden">
-                                <p className="text-[10px] font-black truncate text-slate-800 dark:text-white leading-tight">{req.fromUser?.displayName}</p>
-                                <span className="text-[8px] text-slate-400 truncate">@{req.fromUser?.username}</span>
+                                <p className="text-[11px] font-bold truncate text-slate-900 dark:text-white leading-tight">{req.fromUser?.displayName}</p>
+                                <span className="text-[9px] text-slate-400 truncate">@{req.fromUser?.username}</span>
                               </div>
                             </div>
-                            <div className="flex gap-1">
+                            <div className="flex gap-1.5">
                               <button
                                 onClick={() => respondFriendRequest(req.fromEmail, 'accept')}
-                                className="p-1 text-[9px] font-bold text-white bg-emerald-500 hover:bg-emerald-600 rounded-lg cursor-pointer transition-colors"
-                                title="Accept"
+                                className="px-2.5 py-1 text-[10px] font-bold text-white bg-violet-600 hover:bg-violet-500 rounded-lg cursor-pointer transition-colors shadow-sm"
                               >
-                                <Check className="w-3 h-3" />
+                                Accept
                               </button>
                               <button
                                 onClick={() => respondFriendRequest(req.fromEmail, 'reject')}
-                                className="p-1 text-[9px] font-bold text-white bg-rose-500 hover:bg-rose-600 rounded-lg cursor-pointer transition-colors"
-                                title="Reject"
+                                className="px-2 py-1 text-[10px] font-bold text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg cursor-pointer transition-colors"
                               >
-                                <Trash className="w-3 h-3" />
+                                Delete
                               </button>
                             </div>
                           </div>
@@ -3042,37 +4995,37 @@ export default function App() {
 
                   {/* Classmate candidates */}
                   <div className="flex-1 overflow-y-auto p-2 space-y-2">
-                    <span className="text-[9px] font-bold text-slate-400 uppercase tracking-wider block px-2">
-                      {userSearchQuery ? 'Search Results' : 'Recommended Classmates'}
+                    <span className="text-[9px] font-bold text-slate-400 uppercase tracking-wider block px-2 pt-1">
+                      {userSearchQuery ? 'Search Results' : 'Suggested Classmates'}
                     </span>
                     
                     {(userSearchQuery ? userSearchResult : userSearchResult.filter(c => c.email !== currentUser?.email && !friendsList.some(f => f.email === c.email))).length === 0 ? (
-                      <p className="text-[10px] text-slate-400 p-4 text-center">No classmates found.</p>
+                      <p className="text-xs text-slate-400 p-4 text-center">No classmates found.</p>
                     ) : (
                       (userSearchQuery ? userSearchResult : userSearchResult.filter(c => c.email !== currentUser?.email && !friendsList.some(f => f.email === c.email))).map(student => {
                         const isFriend = friendsList.some(f => f.email === student.email);
-                        const isSentPending = pendingRequests.some(r => r.fromEmail === currentUser.email && r.toEmail === student.email);
+                        const isSentPending = pendingRequests.some(r => r.fromEmail === currentUser?.email && r.toEmail === student.email);
                         
                         return (
-                          <div key={student.email} className="flex items-center justify-between p-2.5 rounded-2xl bg-white/50 dark:bg-slate-900/40 border border-slate-100/80 dark:border-slate-800/60 shadow-sm transition-all hover:bg-white dark:hover:bg-slate-900">
-                            <div className="flex items-center gap-2 overflow-hidden">
-                              <img src={student.avatarUrl} alt="avatar" className="w-8 h-8 rounded-full object-cover ring-2 ring-violet-500/5" />
+                          <div key={student.email} className="flex items-center justify-between p-2.5 rounded-2xl bg-white/70 dark:bg-slate-900/60 border border-slate-100 dark:border-slate-800 shadow-sm hover:border-violet-300 transition-all">
+                            <div className="flex items-center gap-2.5 overflow-hidden">
+                              <SafeAvatar src={student.avatarUrl} name={student.displayName} frame={student.frame} size="sm" />
                               <div className="overflow-hidden">
-                                <h4 className="text-[11px] font-black text-slate-800 dark:text-white leading-tight font-display truncate">{student.displayName}</h4>
-                                <p className="text-[8px] text-slate-400 truncate">@{student.username}</p>
+                                <h4 className="text-xs font-bold text-slate-900 dark:text-white leading-tight truncate">{student.displayName}</h4>
+                                <p className="text-[9px] text-slate-400 truncate">@{student.username}</p>
                               </div>
                             </div>
                             
                             {isFriend ? (
-                              <span className="text-[8px] font-bold text-emerald-500 bg-emerald-500/10 px-2 py-1 rounded-full">Friends</span>
+                              <span className="text-[9px] font-bold text-emerald-600 bg-emerald-50 dark:bg-emerald-950/50 px-2.5 py-1 rounded-full">Connected</span>
                             ) : isSentPending ? (
-                              <span className="text-[8px] font-bold text-amber-500 bg-amber-500/10 px-2 py-1 rounded-full flex items-center gap-1"><Clock className="w-2.5 h-2.5" /> Sent</span>
+                              <span className="text-[9px] font-bold text-amber-600 bg-amber-50 dark:bg-amber-950/50 px-2.5 py-1 rounded-full flex items-center gap-1"><Clock className="w-2.5 h-2.5" /> Requested</span>
                             ) : (
                               <button
                                 onClick={() => sendFriendRequest(student.email)}
-                                className="px-2 py-1 bg-violet-600 hover:bg-violet-500 text-white text-[9px] font-black rounded-lg cursor-pointer transition-all duration-200 flex items-center gap-1 shadow-sm"
+                                className="px-3 py-1.5 bg-gradient-to-r from-violet-600 to-fuchsia-600 hover:from-violet-500 hover:to-fuchsia-500 text-white text-[10px] font-bold rounded-xl cursor-pointer transition-all shadow-sm"
                               >
-                                <UserPlus className="w-2.5 h-2.5" /> Add
+                                Follow
                               </button>
                             )}
                           </div>
@@ -3084,130 +5037,742 @@ export default function App() {
               )}
             </div>
 
-            {/* Active chat window */}
-            <div className="flex-1 flex flex-col bg-white/40 dark:bg-slate-950/20 backdrop-blur-md">
+            {/* Active Instagram/Messenger Chat Window Pane */}
+            <div className={`flex-1 flex flex-col bg-white dark:bg-slate-900 relative transition-all duration-300 ${
+              !activeRoomId ? 'hidden lg:flex' : 'flex w-full h-full'
+            }`}>
               {activeRoomId ? (
-                <>
-                  {/* Top Peer Info bar */}
-                  <div className="p-4 bg-white/85 dark:bg-slate-900/80 backdrop-blur-md border-b border-slate-200/50 dark:border-slate-800/50 flex items-center justify-between">
-                    <div className="flex items-center gap-3">
-                      <img 
-                        src={chatRooms.find(r => r.id === activeRoomId)?.peer?.avatarUrl} 
-                        alt="avatar" 
-                        className="w-9 h-9 rounded-full object-cover ring-2 ring-violet-500/10" 
-                      />
-                      <div>
-                        <h4 className="text-xs font-black text-slate-900 dark:text-white font-display">
-                          {chatRooms.find(r => r.id === activeRoomId)?.peer?.displayName}
-                        </h4>
-                        <span className="text-[9px] text-slate-400 font-semibold">Classmate Account verified</span>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Messages Feed */}
-                  <div className="flex-1 overflow-y-auto p-4 space-y-3">
-                    {chatMessages.map(msg => {
-                      const isMe = msg.senderEmail === currentUser.email;
-                      return (
-                        <div key={msg.id} className={`flex ${isMe ? 'justify-end' : 'justify-start'}`}>
-                          <div className={`max-w-xs p-3.5 rounded-3xl text-xs font-semibold shadow-sm leading-relaxed ${
-                            isMe 
-                              ? 'bg-gradient-to-r from-violet-600 to-indigo-600 text-white rounded-br-none' 
-                              : 'bg-white/90 dark:bg-slate-900/90 text-slate-800 dark:text-slate-200 rounded-bl-none border border-slate-100 dark:border-slate-800'
-                          }`}>
-                            <p>{msg.text}</p>
-                            <span className="text-[8px] opacity-60 mt-1 block text-right">
-                              {new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                            </span>
+                (() => {
+                  const currentRoom = chatRooms.find(r => r.id === activeRoomId);
+                  const activePeer = currentRoom?.peer;
+                  return (
+                    <>
+                      {/* Top Peer Info bar (Instagram DM Style Header) */}
+                      <div className="px-3 sm:px-6 py-3 bg-white/90 dark:bg-slate-900/90 backdrop-blur-md border-b border-slate-200/60 dark:border-slate-800/60 flex items-center justify-between shadow-xs z-10">
+                        <div className="flex items-center gap-2 md:gap-3 min-w-0">
+                          <button
+                            type="button"
+                            onClick={() => setActiveRoomId(null)}
+                            className="flex items-center gap-1.5 px-3 py-1.5 bg-violet-500/10 hover:bg-violet-500/20 text-violet-600 dark:text-violet-300 rounded-xl transition-all cursor-pointer flex-shrink-0 font-extrabold text-xs border border-violet-200/80 dark:border-violet-800/80 active:scale-95 shadow-xs"
+                            title="Back to direct messages & classmate list"
+                          >
+                            <ArrowLeft className="w-4 h-4 text-violet-600 dark:text-violet-400 stroke-[2.5]" />
+                            <span>Chats</span>
+                          </button>
+                          <div className="relative cursor-pointer" onClick={() => setShowPeerInfoDrawer(true)}>
+                            <SafeAvatar
+                              src={activePeer?.avatarUrl}
+                              name={activePeer?.displayName}
+                              frame={(activePeer as any)?.frame}
+                              size="md"
+                              status={activePeer?.online ? 'online' : 'offline'}
+                            />
+                          </div>
+                          <div>
+                            <div className="flex items-center gap-1.5">
+                              <h4 className="text-sm font-bold text-slate-900 dark:text-white font-display">
+                                {activePeer?.displayName}
+                              </h4>
+                              <CheckCircle2 className="w-3.5 h-3.5 text-violet-500 fill-violet-500/20" />
+                            </div>
+                            <p className="text-[10px] text-slate-400 font-medium">
+                              @{(activePeer as any)?.username || activePeer?.email.split('@')[0]} • {activePeer?.online ? 'Active now' : 'Active recently'}
+                            </p>
                           </div>
                         </div>
-                      );
-                    })}
-                    <div ref={chatEndRef} />
-                  </div>
 
-                  {/* Chat input form */}
-                  <div className="p-4 bg-white/85 dark:bg-slate-900/80 backdrop-blur-md border-t border-slate-200/50 dark:border-slate-800/50 flex gap-2">
-                    <input
-                      type="text"
-                      value={chatInputText}
-                      onChange={e => setChatInputText(e.target.value)}
-                      placeholder="Type a message..."
-                      className="flex-1 px-4 py-3 text-xs bg-slate-50/50 dark:bg-slate-800/40 rounded-xl focus:outline-none focus:border-violet-500 border border-slate-100 dark:border-slate-800/60 font-medium"
-                      onKeyDown={e => {
-                        if (e.key === 'Enter') handleSendChatMessage();
-                      }}
-                    />
-                    <button
-                      onClick={handleSendChatMessage}
-                      className="p-3 bg-gradient-to-r from-violet-600 to-fuchsia-600 hover:from-violet-500 hover:to-fuchsia-500 text-white rounded-xl transition-all shadow-md shadow-violet-200/50 dark:shadow-none cursor-pointer"
-                    >
-                      <Send className="w-4 h-4" />
-                    </button>
-                  </div>
-                </>
+                        {/* Top Right Action Icons */}
+                        <div className="flex items-center gap-1 md:gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setShowPeerInfoDrawer(!showPeerInfoDrawer)}
+                            className={`p-2 rounded-full transition-colors cursor-pointer ${
+                              showPeerInfoDrawer ? 'text-violet-600 bg-violet-50 dark:bg-violet-950/50' : 'text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
+                            }`}
+                            title="Chat Details"
+                          >
+                            <Info className="w-5 h-5" />
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="flex-1 flex overflow-hidden relative">
+                        {/* Messages Stream */}
+                        <div className="flex-1 overflow-y-auto p-4 md:p-6 space-y-4 bg-slate-50/40 dark:bg-slate-950/30">
+                          
+                          {/* Chat Encryption / Header notice */}
+                          <div className="text-center my-4 space-y-2 flex flex-col items-center">
+                            <SafeAvatar src={activePeer?.avatarUrl} name={activePeer?.displayName} frame={(activePeer as any)?.frame} size="xl" />
+                            <h3 className="text-sm font-bold text-slate-900 dark:text-white font-display">{activePeer?.displayName}</h3>
+                            <p className="text-[11px] text-slate-400">Classmate Student Account • Reflection Peer</p>
+                            <div className="inline-flex items-center gap-1.5 px-3 py-1 bg-white/80 dark:bg-slate-900/80 border border-slate-200/60 dark:border-slate-800 rounded-full text-[10px] text-slate-500 font-medium shadow-xs">
+                              <Shield className="w-3 h-3 text-emerald-500" /> Encrypted Direct Messaging
+                            </div>
+                          </div>
+
+                          {chatMessages.map((msg, idx) => {
+                            const isMe = currentUser && msg.senderEmail === currentUser.email;
+                            const reactions = messageReactions[msg.id] || [];
+
+                            return (
+                              <div key={msg.id || idx} className={`flex flex-col ${isMe ? 'items-end' : 'items-start'} group relative`}>
+                                <div className="flex items-end gap-2 max-w-[80%] sm:max-w-[70%]">
+                                  {!isMe && (
+                                    <div className="mb-1 shrink-0">
+                                      <SafeAvatar src={activePeer?.avatarUrl} name={activePeer?.displayName} size="xs" />
+                                    </div>
+                                  )}
+                                  
+                                  <div className="relative">
+                                    {msg.audioUrl || msg.text?.includes('Voice Note') || msg.text?.includes('🎙️') ? (
+                                      <div 
+                                        className={`p-3 text-xs shadow-xs transition-all ${
+                                          isMe 
+                                            ? 'bg-gradient-to-r from-violet-600 via-fuchsia-600 to-indigo-600 text-white rounded-2xl rounded-br-xs' 
+                                            : 'bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 rounded-2xl rounded-tl-xs border border-slate-200/60 dark:border-slate-700/60'
+                                        }`}
+                                      >
+                                        <div className="flex items-center gap-3 min-w-[190px] sm:min-w-[220px]">
+                                          <button
+                                            type="button"
+                                            onClick={() => togglePlayVoiceMessage(msg.id, msg.audioUrl, msg.audioDuration || 5)}
+                                            className={`w-9 h-9 rounded-full flex items-center justify-center flex-shrink-0 transition-transform active:scale-95 cursor-pointer shadow-sm ${
+                                              isMe
+                                                ? 'bg-white/20 hover:bg-white/30 text-white'
+                                                : 'bg-violet-600 hover:bg-violet-700 text-white'
+                                            }`}
+                                            title={playingMsgId === msg.id ? 'Pause Voice Note' : 'Play Voice Note'}
+                                          >
+                                            {playingMsgId === msg.id ? (
+                                              <Pause className="w-4 h-4 fill-current" />
+                                            ) : (
+                                              <Play className="w-4 h-4 fill-current ml-0.5" />
+                                            )}
+                                          </button>
+
+                                          <div className="flex-1 space-y-1">
+                                            <div className="flex items-center justify-between text-[10px] opacity-90 font-mono">
+                                              <span className="font-bold flex items-center gap-1">
+                                                <Mic className="w-3 h-3" /> Voice Note
+                                              </span>
+                                              <span>{msg.audioDuration ? `${Math.floor(msg.audioDuration / 60)}:${msg.audioDuration % 60 < 10 ? '0' : ''}${msg.audioDuration % 60}` : '0:05'}</span>
+                                            </div>
+
+                                            {/* Waveform Visualization Bars */}
+                                            <div className="flex items-center gap-0.5 h-4 w-full">
+                                              {[25, 50, 85, 40, 30, 95, 65, 45, 80, 35, 90, 60, 30, 75, 40].map((h, i) => {
+                                                const isPlaying = playingMsgId === msg.id;
+                                                const progress = playingMsgProgress[msg.id] || 0;
+                                                const isPlayed = (i / 15) * 100 <= progress;
+                                                return (
+                                                  <div
+                                                    key={i}
+                                                    className={`flex-1 rounded-full transition-all duration-150 ${
+                                                      isPlaying ? 'animate-pulse' : ''
+                                                    } ${
+                                                      isMe
+                                                        ? isPlayed ? 'bg-white' : 'bg-white/40'
+                                                        : isPlayed ? 'bg-violet-600 dark:bg-violet-400' : 'bg-slate-300 dark:bg-slate-600'
+                                                    }`}
+                                                    style={{
+                                                      height: `${h}%`,
+                                                    }}
+                                                  />
+                                                );
+                                              })}
+                                            </div>
+                                          </div>
+                                        </div>
+                                      </div>
+                                    ) : (
+                                      <div 
+                                        className={`p-3.5 text-xs font-medium leading-relaxed shadow-xs transition-all ${
+                                          isMe 
+                                            ? 'bg-gradient-to-r from-violet-600 via-fuchsia-600 to-indigo-600 text-white rounded-2xl rounded-br-xs' 
+                                            : 'bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 rounded-2xl rounded-tl-xs border border-slate-200/60 dark:border-slate-700/60'
+                                        }`}
+                                      >
+                                        <p>{msg.text}</p>
+                                      </div>
+                                    )}
+
+                                    {/* Hover Quick Reaction Pill (Instagram DM Double-Tap / Reaction style) */}
+                                    <div className={`absolute top-1/2 -translate-y-1/2 ${isMe ? '-left-20' : '-right-20'} opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1 bg-white dark:bg-slate-800 p-1 rounded-full border border-slate-200 dark:border-slate-700 shadow-md z-10`}>
+                                      {['❤️', '👍', '🔥', '😂'].map(emoji => (
+                                        <button
+                                          key={emoji}
+                                          type="button"
+                                          onClick={() => handleToggleMessageReaction(msg.id, emoji)}
+                                          className="text-xs hover:scale-125 transition-transform p-0.5 cursor-pointer"
+                                        >
+                                          {emoji}
+                                        </button>
+                                      ))}
+                                    </div>
+
+                                    {/* Reaction Display Badges */}
+                                    {reactions.length > 0 && (
+                                      <div className={`absolute -bottom-2 ${isMe ? 'left-2' : 'right-2'} bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-full px-1.5 py-0.5 text-[10px] shadow-sm flex items-center gap-0.5`}>
+                                        {reactions.map((r, i) => <span key={i}>{r}</span>)}
+                                      </div>
+                                    )}
+                                  </div>
+                                </div>
+
+                                <span className="text-[9px] text-slate-400 mt-1 px-1">
+                                  {new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                  {isMe && idx === chatMessages.length - 1 && (
+                                    <span className="ml-1 text-emerald-500 font-bold">• Seen</span>
+                                  )}
+                                </span>
+                              </div>
+                            );
+                          })}
+                          <div ref={chatEndRef} />
+                        </div>
+
+                        {/* Peer Info Drawer (Right Sidebar if toggled) */}
+                        {showPeerInfoDrawer && (
+                          <div className="w-64 border-l border-slate-200/60 dark:border-slate-800/60 bg-white dark:bg-slate-900 p-4 space-y-4 overflow-y-auto hidden lg:block">
+                            <div className="text-center space-y-2 pt-2">
+                              <img src={activePeer?.avatarUrl} alt="avatar" className="w-16 h-16 rounded-full object-cover mx-auto ring-4 ring-violet-500/10" />
+                              <h4 className="text-sm font-bold text-slate-900 dark:text-white font-display">{activePeer?.displayName}</h4>
+                              <p className="text-[10px] text-slate-400">@{(activePeer as any)?.username || activePeer?.email.split('@')[0]}</p>
+                            </div>
+
+                            <div className="space-y-2 pt-2 border-t border-slate-100 dark:border-slate-800">
+                              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Study Stats</span>
+                              <div className="p-2.5 bg-slate-50 dark:bg-slate-800/50 rounded-xl space-y-1">
+                                <div className="flex justify-between text-xs font-semibold">
+                                  <span className="text-slate-500">Streak:</span>
+                                  <span className="text-amber-500 font-bold">{(activePeer as any)?.stats?.currentStreak || 5} Days 🔥</span>
+                                </div>
+                                <div className="flex justify-between text-xs font-semibold">
+                                  <span className="text-slate-500">Focus Hours:</span>
+                                  <span className="text-violet-600 dark:text-violet-400 font-bold">{(activePeer as any)?.stats?.totalFocusMinutes || 120} mins</span>
+                                </div>
+                              </div>
+                            </div>
+
+                            <div className="space-y-2 pt-2 border-t border-slate-100 dark:border-slate-800">
+                              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Privacy & Actions</span>
+                              <button 
+                                onClick={() => showToast('Chat notifications muted for 24h', 'info')}
+                                className="w-full text-left p-2 hover:bg-slate-100 dark:hover:bg-slate-800 text-xs font-medium text-slate-700 dark:text-slate-300 rounded-xl transition-colors flex items-center gap-2 cursor-pointer"
+                              >
+                                <Bell className="w-4 h-4 text-slate-400" /> Mute Notifications
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Live Voice Mail Recording Mode or Regular Message Input Bar */}
+                      {isRecordingVoiceNote ? (
+                        <div className="p-3 md:p-4 bg-rose-500/10 dark:bg-rose-950/30 border-t border-rose-500/20 flex items-center justify-between gap-3">
+                          <div className="flex items-center gap-3">
+                            <div className="relative flex items-center justify-center">
+                              <span className="w-3.5 h-3.5 bg-rose-500 rounded-full animate-ping absolute"></span>
+                              <span className="w-3 h-3 bg-rose-600 rounded-full relative"></span>
+                            </div>
+                            <span className="text-xs font-mono font-bold text-rose-600 dark:text-rose-400">
+                              Recording {Math.floor(voiceNoteDuration / 60)}:{voiceNoteDuration % 60 < 10 ? '0' : ''}{voiceNoteDuration % 60}
+                            </span>
+                            
+                            {/* Animated Soundwave bars */}
+                            <div className="hidden sm:flex items-center gap-0.5 h-5 ml-2">
+                              {[14, 22, 10, 28, 16, 24, 12, 20].map((h, i) => (
+                                <div 
+                                  key={i} 
+                                  className="w-1 bg-rose-500 dark:bg-rose-400 rounded-full animate-bounce"
+                                  style={{ 
+                                    height: `${h}px`, 
+                                    animationDelay: `${i * 0.1}s`,
+                                    animationDuration: '0.8s'
+                                  }}
+                                />
+                              ))}
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={cancelVoiceNoteRecording}
+                              className="p-2 text-slate-500 hover:text-rose-600 hover:bg-rose-100 dark:hover:bg-rose-900/50 rounded-full transition-colors cursor-pointer flex items-center gap-1 text-xs font-medium"
+                              title="Discard voice recording"
+                            >
+                              <Trash2 className="w-4 h-4" /> Cancel
+                            </button>
+                            <button
+                              type="button"
+                              onClick={finishAndSendVoiceNote}
+                              className="px-3.5 py-1.5 bg-gradient-to-r from-violet-600 via-fuchsia-600 to-indigo-600 text-white rounded-full text-xs font-bold shadow-md hover:opacity-90 transition-opacity cursor-pointer flex items-center gap-1.5"
+                            >
+                              <Send className="w-3.5 h-3.5" /> Send Voice
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="p-3 md:p-4 bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border-t border-slate-200/60 dark:border-slate-800/60 flex items-center gap-2">
+                          {/* Note: Photo attachment removed per user request */}
+                          
+                          {/* Mic / Voice Note Button */}
+                          <button
+                            type="button"
+                            onClick={startVoiceNoteRecording}
+                            className="p-2 text-slate-500 hover:text-violet-600 hover:bg-violet-100 dark:hover:bg-violet-900/40 rounded-full transition-colors cursor-pointer flex-shrink-0"
+                            title="Record voice message"
+                          >
+                            <Mic className="w-5 h-5" />
+                          </button>
+
+                          {/* Text Input Pill */}
+                          <div className="flex-1 relative flex items-center">
+                            <input
+                              type="text"
+                              value={chatInputText}
+                              onChange={e => setChatInputText(e.target.value)}
+                              placeholder="Message..."
+                              className="w-full pl-4 pr-10 py-2.5 text-xs bg-slate-100 dark:bg-slate-800 rounded-full focus:outline-none focus:ring-2 focus:ring-violet-500/50 text-slate-900 dark:text-white font-medium placeholder:text-slate-400"
+                              onKeyDown={e => {
+                                if (e.key === 'Enter') handleSendChatMessage();
+                              }}
+                            />
+                          </div>
+
+                          {/* Instant Quick Love Reaction / Send Button */}
+                          {chatInputText.trim() ? (
+                            <button
+                              type="button"
+                              onClick={() => handleSendChatMessage()}
+                              className="p-2.5 bg-gradient-to-r from-violet-600 via-fuchsia-600 to-indigo-600 hover:opacity-90 text-white rounded-full transition-all shadow-md cursor-pointer flex-shrink-0"
+                            >
+                              <Send className="w-4 h-4" />
+                            </button>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                handleSendChatMessage('❤️');
+                              }}
+                              className="p-2 text-rose-500 hover:scale-125 transition-transform cursor-pointer flex-shrink-0"
+                              title="Send quick ❤️"
+                            >
+                              <Heart className="w-6 h-6 fill-rose-500" />
+                            </button>
+                          )}
+                        </div>
+                      )}
+                    </>
+                  );
+                })()
               ) : (
-                <div className="flex-1 flex flex-col items-center justify-center text-center p-8 text-slate-400">
-                  <MessageSquare className="w-10 h-10 mb-2 animate-bounce text-violet-500" />
-                  <p className="text-xs font-black font-display text-slate-700 dark:text-slate-300">Select a study classmate to start chatting!</p>
-                  <p className="text-[10px] text-slate-400 mt-0.5">Real-time chat answers from classmate AI integrations are active.</p>
+                /* Empty Chat Screen (Instagram DM Style) */
+                <div className="flex-1 flex flex-col items-center justify-center text-center p-8 text-slate-400 space-y-4">
+                  <div className="w-20 h-20 rounded-full bg-gradient-to-tr from-fuchsia-500/20 via-pink-500/20 to-indigo-500/20 flex items-center justify-center text-violet-600 dark:text-violet-400 ring-8 ring-violet-500/5">
+                    <Send className="w-10 h-10 transform -rotate-12" />
+                  </div>
+                  <div className="space-y-1">
+                    <h3 className="text-base font-bold text-slate-900 dark:text-white font-display">Your Messages</h3>
+                    <p className="text-xs text-slate-400 max-w-sm mx-auto">
+                      Send private messages, share daily study progress, and collaborate with your classmates.
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => setChatSidebarTab('friends')}
+                    className="px-5 py-2.5 bg-gradient-to-r from-violet-600 via-fuchsia-600 to-indigo-600 text-white font-bold text-xs rounded-2xl shadow-md hover:shadow-lg active:scale-95 transition-all cursor-pointer"
+                  >
+                    Send Message
+                  </button>
                 </div>
               )}
             </div>
-
           </div>
         )}
 
         {/* TAB 6: TROPHY RANK LEADERBOARDS */}
         {currentTab === 'leaderboard' && (
-          <div className="p-6 md:p-8 space-y-6 max-w-2xl mx-auto w-full">
-            <div>
-              <h1 className="text-2xl font-black text-slate-900 dark:text-white font-display">Trophy Rank Leaderboards</h1>
-              <p className="text-xs text-slate-400 mt-0.5">Compare daily or weekly productivity rates and secure a spot on the podium.</p>
+          <div className="p-6 md:p-8 space-y-8 max-w-4xl mx-auto w-full animate-fade-in">
+            {/* Hero Trophy Banner */}
+            <div className="relative overflow-hidden bg-gradient-to-r from-amber-500/15 via-yellow-500/10 to-amber-600/20 dark:from-amber-950/40 dark:via-yellow-900/20 dark:to-slate-900 p-6 sm:p-8 rounded-[36px] border border-amber-400/30 dark:border-amber-500/30 shadow-xl">
+              <div className="absolute -right-6 -bottom-6 w-40 h-40 bg-amber-400/20 dark:bg-amber-500/10 rounded-full blur-2xl pointer-events-none"></div>
+              <div className="relative z-10 flex flex-col md:flex-row items-center justify-between gap-6">
+                <div className="flex items-center gap-4 text-center md:text-left">
+                  <div className="w-16 h-16 rounded-3xl bg-gradient-to-br from-amber-400 to-yellow-500 p-0.5 shadow-lg shadow-amber-500/30 flex items-center justify-center shrink-0">
+                    <div className="w-full h-full bg-slate-900 rounded-[22px] flex items-center justify-center text-3xl animate-bounce">
+                      🏆
+                    </div>
+                  </div>
+                  <div>
+                    <div className="inline-flex items-center gap-1.5 px-3 py-1 bg-amber-400/20 dark:bg-amber-500/20 border border-amber-400/30 rounded-full text-[10px] font-black text-amber-700 dark:text-amber-300 uppercase tracking-wider mb-1">
+                      <Sparkles className="w-3 h-3 animate-spin" />
+                      <span>Season Leaderboards</span>
+                    </div>
+                    <h1 className="text-2xl sm:text-3xl font-black text-slate-900 dark:text-white font-display">Hall of Trophies</h1>
+                    <p className="text-xs text-slate-600 dark:text-slate-300 mt-1 max-w-md">Compare daily productivity rates, climb ranks, and claim your place on the champions podium!</p>
+                  </div>
+                </div>
+
+                {/* Scope Switchers */}
+                <div className="flex bg-white/80 dark:bg-slate-900/80 backdrop-blur-md p-1.5 rounded-2xl border border-amber-200 dark:border-amber-900/50 shadow-md">
+                  {['global', 'friends'].map(sc => (
+                    <button
+                      key={sc}
+                      onClick={() => fetchLeaderboards(currentUser.email, sc, 'weekly')}
+                      className="px-4 py-2 hover:bg-amber-500 hover:text-slate-950 text-slate-700 dark:text-slate-200 text-xs font-black rounded-xl capitalize transition-all cursor-pointer"
+                    >
+                      {sc === 'global' ? '🌍 Global' : '👥 Classmates'}
+                    </button>
+                  ))}
+                </div>
+              </div>
             </div>
 
-            {/* Tabs & Controls */}
-            <div className="flex gap-2">
-              {['global', 'friends'].map(sc => (
-                <button
-                  key={sc}
-                  onClick={() => fetchLeaderboards(currentUser.email, sc, 'weekly')}
-                  className="px-5 py-2.5 bg-white/80 dark:bg-slate-900/80 backdrop-blur-md border border-violet-100/50 dark:border-slate-850 hover:bg-violet-500 hover:text-white text-xs font-bold rounded-2xl capitalize transition-all duration-350 shadow-sm cursor-pointer"
-                >
-                  {sc} rankings
-                </button>
-              ))}
-            </div>
+            {/* Filtered Rankings (No AI Coach) */}
+            {(() => {
+              const cleanRankings = leaderboardRankings.filter(r => r.email !== 'dayscore_ai@reflect.edu' && r.username !== 'dayscore_ai');
 
-            {/* Rankings List */}
-            <div className="bg-white/80 dark:bg-slate-900/80 backdrop-blur-md rounded-[32px] border border-violet-100/50 dark:border-slate-800/80 shadow-md overflow-hidden divide-y divide-slate-100 dark:divide-slate-800">
-              {leaderboardRankings.map((rank, index) => (
-                <div key={rank.email} className="flex items-center justify-between p-4 hover:bg-slate-50 dark:hover:bg-slate-800/30 transition-colors">
-                  <div className="flex items-center gap-4">
-                    {/* Position */}
-                    <span className={`w-6 text-center font-black text-xs ${
-                      index === 0 ? 'text-yellow-500 text-sm' : index === 1 ? 'text-slate-400' : index === 2 ? 'text-amber-600' : 'text-slate-400'
-                    }`}>
-                      {index === 0 ? '🥇' : index === 1 ? '🥈' : index === 2 ? '🥉' : index + 1}
-                    </span>
+              if (cleanRankings.length === 0) {
+                return (
+                  <div className="p-12 text-center bg-white/80 dark:bg-slate-900/80 rounded-[32px] border border-slate-200 dark:border-slate-800 text-slate-400 space-y-3">
+                    <Trophy className="w-12 h-12 mx-auto text-amber-500/40 animate-pulse" />
+                    <p className="text-xs font-bold text-slate-600 dark:text-slate-300">No active rankers found in this category yet.</p>
+                    <p className="text-[11px] text-slate-400">Log daily reflections to claim the #1 spot!</p>
+                  </div>
+                );
+              }
 
-                    <img src={rank.avatarUrl} alt="avatar" className="w-10 h-10 rounded-full object-cover" />
-                    <div>
-                      <h4 className="text-xs font-black text-slate-800 dark:text-white leading-tight">{rank.displayName}</h4>
-                      <span className="text-[10px] text-slate-400">@{rank.username}</span>
+              const top1 = cleanRankings[0];
+              const top2 = cleanRankings[1];
+              const top3 = cleanRankings[2];
+
+              const trophiesList = [
+                {
+                  id: 'gold_champion',
+                  title: 'Grand Champion Gold Cup',
+                  subtitle: '#1 Ranked Season Champion',
+                  icon: '🏆',
+                  gradient: 'from-amber-400 via-yellow-300 to-amber-500',
+                  border: 'border-amber-400 dark:border-amber-500',
+                  glow: 'shadow-[0_0_30px_rgba(245,158,11,0.35)]',
+                  textAccent: 'text-amber-600 dark:text-amber-400',
+                  holder: top1 ? top1.displayName : 'Unclaimed',
+                  holderAvatar: top1?.avatarUrl,
+                  holderScore: top1 ? `${top1.score}%` : 'N/A',
+                  req: 'Maintain #1 spot in student rankings',
+                  status: top1?.email === currentUser?.email ? '✨ Yours Now!' : top1 ? 'Held by Champion' : 'Available',
+                },
+                {
+                  id: 'silver_vanguard',
+                  title: 'Silver Vanguard Shield',
+                  subtitle: '#2 Ranked Season Titan',
+                  icon: '🛡️',
+                  gradient: 'from-slate-200 via-slate-100 to-slate-300',
+                  border: 'border-slate-300 dark:border-slate-600',
+                  glow: 'shadow-[0_0_25px_rgba(203,213,225,0.3)]',
+                  textAccent: 'text-slate-700 dark:text-slate-300',
+                  holder: top2 ? top2.displayName : 'Unclaimed',
+                  holderAvatar: top2?.avatarUrl,
+                  holderScore: top2 ? `${top2.score}%` : 'N/A',
+                  req: 'Secure #2 spot in student rankings',
+                  status: top2?.email === currentUser?.email ? '✨ Yours Now!' : top2 ? 'Held by Vanguard' : 'Available',
+                },
+                {
+                  id: 'bronze_crest',
+                  title: 'Bronze Pioneer Crest',
+                  subtitle: '#3 Ranked Season Scholar',
+                  icon: '🥉',
+                  gradient: 'from-amber-700 via-amber-600 to-amber-800',
+                  border: 'border-amber-700 dark:border-amber-800',
+                  glow: 'shadow-[0_0_25px_rgba(180,83,9,0.3)]',
+                  textAccent: 'text-amber-800 dark:text-amber-400',
+                  holder: top3 ? top3.displayName : 'Unclaimed',
+                  holderAvatar: top3?.avatarUrl,
+                  holderScore: top3 ? `${top3.score}%` : 'N/A',
+                  req: 'Secure #3 podium place in rankings',
+                  status: top3?.email === currentUser?.email ? '✨ Yours Now!' : top3 ? 'Held by Pioneer' : 'Available',
+                },
+                {
+                  id: 'diamond_crystal',
+                  title: 'Diamond Reflection Crystal',
+                  subtitle: '90%+ Daily Score Legend',
+                  icon: '💎',
+                  gradient: 'from-cyan-400 via-sky-300 to-indigo-400',
+                  border: 'border-cyan-400 dark:border-cyan-500',
+                  glow: 'shadow-[0_0_30px_rgba(6,182,212,0.35)]',
+                  textAccent: 'text-cyan-600 dark:text-cyan-400',
+                  holder: currentUser?.stats?.highestScore && currentUser.stats.highestScore >= 90 ? currentUser.displayName : 'Streak Achievers',
+                  holderAvatar: currentUser?.avatarUrl,
+                  holderScore: `${currentUser?.stats?.highestScore || 0}%`,
+                  req: 'Achieve 90%+ daily reflection score',
+                  status: (currentUser?.stats?.highestScore || 0) >= 90 ? '✓ Unlocked' : 'In Progress',
+                },
+                {
+                  id: 'emerald_star',
+                  title: 'Emerald Flame Star',
+                  subtitle: '7-Day Streak Master',
+                  icon: '🌟',
+                  gradient: 'from-emerald-400 via-teal-300 to-emerald-500',
+                  border: 'border-emerald-400 dark:border-emerald-500',
+                  glow: 'shadow-[0_0_30px_rgba(16,185,129,0.35)]',
+                  textAccent: 'text-emerald-600 dark:text-emerald-400',
+                  holder: (currentUser?.stats?.currentStreak || 0) >= 7 ? currentUser?.displayName : 'Streak Legends',
+                  holderAvatar: currentUser?.avatarUrl,
+                  holderScore: `${currentUser?.stats?.currentStreak || 0} Days`,
+                  req: 'Maintain a 7-day active reflection streak',
+                  status: (currentUser?.stats?.currentStreak || 0) >= 7 ? '✓ Unlocked' : `${currentUser?.stats?.currentStreak || 0}/7 Days`,
+                },
+              ];
+
+              return (
+                <div className="space-y-8">
+                  {/* --- SPECIAL 3D ANIMATED PODIUM STAGE --- */}
+                  <div className="pt-6 pb-2">
+                    <div className="text-center mb-6 space-y-1">
+                      <span className="text-[10px] font-black uppercase tracking-widest text-amber-600 dark:text-amber-400 font-display flex items-center justify-center gap-1.5">
+                        <Sparkles className="w-3.5 h-3.5 text-amber-500 animate-spin" />
+                        <span>Top Productivity Champions</span>
+                        <Sparkles className="w-3.5 h-3.5 text-amber-500 animate-spin" />
+                      </span>
+                      <h3 className="text-xl font-black text-slate-900 dark:text-white font-display">Season Champions Podium</h3>
+                    </div>
+
+                    <div className="grid grid-cols-3 gap-3 sm:gap-6 items-end max-w-2xl mx-auto">
+                      {/* Rank 2 - Silver Titan */}
+                      {top2 ? (
+                        <motion.div
+                          whileHover={{ y: -8, scale: 1.02 }}
+                          transition={{ type: 'spring', stiffness: 300 }}
+                          onClick={() => setTrophyInspectModal(trophiesList[1])}
+                          className="cursor-pointer bg-gradient-to-b from-slate-100 via-white to-slate-200/80 dark:from-slate-800/90 dark:via-slate-900 dark:to-slate-950 p-4 rounded-[28px] border-2 border-slate-300 dark:border-slate-700 shadow-xl flex flex-col items-center text-center relative group"
+                        >
+                          <div className="absolute -top-3 px-2.5 py-0.5 bg-gradient-to-r from-slate-300 to-slate-200 dark:from-slate-700 dark:to-slate-800 text-slate-900 dark:text-white rounded-full text-[9px] font-black uppercase tracking-wider shadow-md border border-slate-400/50 flex items-center gap-1">
+                            🥈 2nd Place
+                          </div>
+                          <div className="relative mt-3 mb-2">
+                            <SafeAvatar src={top2.avatarUrl} name={top2.displayName} frame={top2.frame || 'diamond'} size="lg" />
+                            <span className="absolute -bottom-1 -right-1 text-lg z-10">🥈</span>
+                          </div>
+                          <h4 className="text-xs font-black text-slate-900 dark:text-white truncate max-w-full font-display">{top2.displayName}</h4>
+                          <span className="text-[10px] text-slate-400">@{top2.username}</span>
+                          <div className="mt-2.5 px-3 py-1 bg-slate-200/80 dark:bg-slate-800 rounded-xl text-xs font-black text-slate-800 dark:text-slate-200 border border-slate-300/50 dark:border-slate-700">
+                            {top2.score}% Rate
+                          </div>
+                        </motion.div>
+                      ) : <div />}
+
+                      {/* Rank 1 - Gold Champion (Center & Elevated) */}
+                      {top1 && (
+                        <motion.div
+                          whileHover={{ y: -12, scale: 1.04 }}
+                          transition={{ type: 'spring', stiffness: 300 }}
+                          onClick={() => setTrophyInspectModal(trophiesList[0])}
+                          className="cursor-pointer bg-gradient-to-b from-amber-500/25 via-yellow-400/15 to-amber-500/20 dark:from-amber-950/60 dark:via-yellow-900/30 dark:to-slate-900 p-5 rounded-[32px] border-2 border-amber-400 dark:border-yellow-400 shadow-[0_0_35px_rgba(245,158,11,0.3)] flex flex-col items-center text-center relative transform -translate-y-4 group"
+                        >
+                          <div className="absolute -top-4 px-3.5 py-1 bg-gradient-to-r from-amber-500 via-yellow-400 to-amber-500 text-slate-950 font-black rounded-full text-[10px] uppercase tracking-wider shadow-lg flex items-center gap-1 animate-pulse border border-yellow-200">
+                            👑 Champion #1
+                          </div>
+                          <div className="relative mt-3 mb-2">
+                            <SafeAvatar src={top1.avatarUrl} name={top1.displayName} frame={top1.frame || 'gold'} size="xl" />
+                            <motion.span 
+                              animate={{ y: [0, -6, 0] }}
+                              transition={{ repeat: Infinity, duration: 2, ease: "easeInOut" }}
+                              className="absolute -top-5 left-1/2 transform -translate-x-1/2 text-3xl z-10"
+                            >
+                              🏆
+                            </motion.span>
+                          </div>
+                          <h4 className="text-sm font-black text-slate-900 dark:text-white truncate max-w-full font-display">{top1.displayName}</h4>
+                          <span className="text-[10px] text-amber-600 dark:text-amber-400 font-extrabold">@{top1.username}</span>
+                          <div className="mt-2.5 px-3.5 py-1 bg-gradient-to-r from-amber-500 to-yellow-400 text-slate-950 rounded-xl text-xs font-black shadow-lg flex items-center gap-1">
+                            <span>🔥</span> {top1.score}% Rate
+                          </div>
+                        </motion.div>
+                      )}
+
+                      {/* Rank 3 - Bronze Scholar */}
+                      {top3 ? (
+                        <motion.div
+                          whileHover={{ y: -8, scale: 1.02 }}
+                          transition={{ type: 'spring', stiffness: 300 }}
+                          onClick={() => setTrophyInspectModal(trophiesList[2])}
+                          className="cursor-pointer bg-gradient-to-b from-amber-900/15 via-white to-amber-950/15 dark:from-amber-950/40 dark:via-slate-900 dark:to-slate-950 p-4 rounded-[28px] border-2 border-amber-700/60 dark:border-amber-700/50 shadow-xl flex flex-col items-center text-center relative group"
+                        >
+                          <div className="absolute -top-3 px-2.5 py-0.5 bg-gradient-to-r from-amber-800 to-amber-900 text-amber-100 rounded-full text-[9px] font-black uppercase tracking-wider shadow-md border border-amber-600/50 flex items-center gap-1">
+                            🥉 3rd Place
+                          </div>
+                          <div className="relative mt-3 mb-2">
+                            <SafeAvatar src={top3.avatarUrl} name={top3.displayName} frame={top3.frame || 'neon'} size="lg" />
+                            <span className="absolute -bottom-1 -right-1 text-lg z-10">🥉</span>
+                          </div>
+                          <h4 className="text-xs font-black text-slate-900 dark:text-white truncate max-w-full font-display">{top3.displayName}</h4>
+                          <span className="text-[10px] text-slate-400">@{top3.username}</span>
+                          <div className="mt-2.5 px-3 py-1 bg-amber-100 dark:bg-amber-950/80 rounded-xl text-xs font-black text-amber-900 dark:text-amber-300 border border-amber-300/50 dark:border-amber-800/50">
+                            {top3.score}% Rate
+                          </div>
+                        </motion.div>
+                      ) : <div />}
                     </div>
                   </div>
 
-                  <div className="flex items-center gap-6">
-                    <div className="text-right">
-                      <span className="text-xs font-black text-slate-900 dark:text-white block">{rank.score}%</span>
-                      <span className="text-[9px] text-slate-400 uppercase tracking-wide font-bold">productivity rate</span>
+                  {/* --- SPECIAL INTERACTIVE 3D TROPHY GALLERY SHOWCASE --- */}
+                  <div className="bg-gradient-to-br from-white/90 via-amber-50/20 to-white/90 dark:from-slate-900/90 dark:via-amber-950/20 dark:to-slate-900/90 backdrop-blur-md p-6 sm:p-8 rounded-[36px] border-2 border-amber-300/50 dark:border-amber-800/40 shadow-xl space-y-6">
+                    <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 border-b border-amber-100 dark:border-slate-800 pb-4">
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <Crown className="w-5 h-5 text-amber-500 fill-amber-500/20" />
+                          <h3 className="text-base font-black text-slate-900 dark:text-white font-display">Special Separate Trophy Gallery</h3>
+                        </div>
+                        <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">Click any trophy to launch full 3D interactive inspection & celebration</p>
+                      </div>
+
+                      <span className="px-3.5 py-1.5 bg-gradient-to-r from-amber-500/15 to-yellow-500/15 dark:from-amber-950/50 dark:to-yellow-950/50 border border-amber-300/50 dark:border-amber-700/50 text-amber-700 dark:text-amber-300 text-xs font-black rounded-full flex items-center gap-1.5 shrink-0">
+                        <Flame className="w-3.5 h-3.5 text-amber-500" />
+                        <span>Streak: {currentUser?.stats?.currentStreak || 0} Days</span>
+                      </span>
+                    </div>
+
+                    {/* Interactive Trophy Cards Grid */}
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                      {trophiesList.map(trophy => {
+                        const isSelected = selectedTrophyId === trophy.id;
+                        return (
+                          <motion.div
+                            key={trophy.id}
+                            whileHover={{ y: -6, scale: 1.02 }}
+                            transition={{ type: 'spring', stiffness: 350 }}
+                            onClick={() => {
+                              setSelectedTrophyId(trophy.id);
+                              setTrophyInspectModal(trophy);
+                            }}
+                            className={`cursor-pointer p-5 rounded-[28px] border-2 transition-all relative overflow-hidden flex flex-col justify-between ${
+                              isSelected
+                                ? `${trophy.border} ${trophy.glow} bg-white dark:bg-slate-900 ring-2 ring-amber-400/50`
+                                : 'border-slate-200/80 dark:border-slate-800/80 bg-white/70 dark:bg-slate-900/60 hover:border-amber-300 dark:hover:border-amber-700'
+                            }`}
+                          >
+                            {/* Animated Background Shimmer */}
+                            <div className="absolute top-0 right-0 w-32 h-32 bg-gradient-to-br from-amber-400/10 via-transparent to-transparent rounded-full blur-xl pointer-events-none" />
+
+                            <div>
+                              <div className="flex items-center justify-between mb-3">
+                                <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider bg-slate-100 dark:bg-slate-800 ${trophy.textAccent}`}>
+                                  {trophy.subtitle}
+                                </span>
+                                <span className="text-[10px] font-black text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/50 px-2 py-0.5 rounded-md">
+                                  {trophy.status}
+                                </span>
+                              </div>
+
+                              {/* Big 3D Trophy Animated Emblem */}
+                              <div className="my-3 flex items-center justify-center">
+                                <motion.div
+                                  animate={{ 
+                                    rotateY: [0, 15, -15, 0],
+                                    y: [0, -4, 0]
+                                  }}
+                                  transition={{ 
+                                    repeat: Infinity, 
+                                    duration: 4, 
+                                    ease: "easeInOut" 
+                                  }}
+                                  className={`w-20 h-20 rounded-3xl bg-gradient-to-br ${trophy.gradient} p-0.5 shadow-lg flex items-center justify-center text-4xl shrink-0`}
+                                >
+                                  <div className="w-full h-full bg-slate-950 rounded-[22px] flex items-center justify-center text-4xl">
+                                    {trophy.icon}
+                                  </div>
+                                </motion.div>
+                              </div>
+
+                              <h4 className="text-sm font-black text-slate-900 dark:text-white text-center font-display leading-snug">
+                                {trophy.title}
+                              </h4>
+                              <p className="text-[10px] text-slate-400 text-center mt-1">
+                                {trophy.req}
+                              </p>
+                            </div>
+
+                            {/* Holder Info Footer */}
+                            <div className="mt-4 pt-3 border-t border-slate-100 dark:border-slate-800/80 flex items-center justify-between">
+                              <div className="flex items-center gap-2 overflow-hidden">
+                                {trophy.holderAvatar ? (
+                                  <img src={trophy.holderAvatar} alt="avatar" className="w-6 h-6 rounded-full object-cover shrink-0" />
+                                ) : (
+                                  <div className="w-6 h-6 rounded-full bg-amber-500/20 text-amber-500 flex items-center justify-center text-[10px] font-bold shrink-0">
+                                    👑
+                                  </div>
+                                )}
+                                <span className="text-[11px] font-bold text-slate-700 dark:text-slate-300 truncate">
+                                  {trophy.holder}
+                                </span>
+                              </div>
+                              <span className="text-[10px] font-black text-violet-600 dark:text-violet-400 bg-violet-50 dark:bg-violet-950/50 px-2 py-0.5 rounded-md shrink-0">
+                                {trophy.holderScore}
+                              </span>
+                            </div>
+                          </motion.div>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {/* Rankings List */}
+                  <div className="bg-white/80 dark:bg-slate-900/80 backdrop-blur-md rounded-[32px] border border-amber-200/50 dark:border-slate-800/80 shadow-lg overflow-hidden">
+                    <div className="p-4 bg-slate-50 dark:bg-slate-800/50 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between">
+                      <span className="text-xs font-black text-slate-800 dark:text-white font-display uppercase tracking-wider">Full Leaderboard Ranks</span>
+                      <span className="text-[10px] text-slate-400 font-bold">{cleanRankings.length} Active Students</span>
+                    </div>
+
+                    <div className="divide-y divide-slate-100 dark:divide-slate-800/80">
+                      {cleanRankings.map((rank, index) => {
+                        const isSelf = currentUser && rank.email.toLowerCase() === currentUser.email.toLowerCase();
+                        return (
+                          <div key={rank.email} className={`flex items-center justify-between p-4 transition-colors ${
+                            isSelf ? 'bg-amber-50/70 dark:bg-amber-950/20 font-bold' : 'hover:bg-slate-50 dark:hover:bg-slate-800/40'
+                          }`}>
+                            <div className="flex items-center gap-4">
+                              {/* Position */}
+                              <span className={`w-8 h-8 rounded-2xl flex items-center justify-center font-black text-xs ${
+                                index === 0 ? 'bg-amber-400 text-slate-950 shadow-md' :
+                                index === 1 ? 'bg-slate-300 text-slate-900' :
+                                index === 2 ? 'bg-amber-700 text-white' :
+                                'bg-slate-100 dark:bg-slate-800 text-slate-500'
+                              }`}>
+                                {index === 0 ? '🥇' : index === 1 ? '🥈' : index === 2 ? '🥉' : `#${index + 1}`}
+                              </span>
+
+                              <SafeAvatar src={rank.avatarUrl} name={rank.displayName} frame={rank.frame || 'none'} size="sm" />
+                              <div>
+                                <div className="flex items-center gap-1.5">
+                                  <h4 className="text-xs font-black text-slate-900 dark:text-white leading-tight">{rank.displayName}</h4>
+                                  {isSelf && <span className="text-[9px] px-2 py-0.5 bg-amber-500/20 text-amber-700 dark:text-amber-300 rounded-md font-black">You</span>}
+                                  {index === 0 && <span className="text-[9px] px-1.5 py-0.2 bg-amber-400/20 text-amber-600 dark:text-amber-400 rounded-md font-bold">Top Ranker</span>}
+                                </div>
+                                <span className="text-[10px] text-slate-400">@{rank.username}</span>
+                              </div>
+                            </div>
+
+                            <div className="flex items-center gap-4">
+                              {rank.streak > 0 && (
+                                <span className="text-[10px] font-bold text-orange-500 bg-orange-500/10 px-2.5 py-1 rounded-full border border-orange-500/20 flex items-center gap-1">
+                                  <span>{rank.streak}</span>
+                                  <span>🔥</span>
+                                </span>
+                              )}
+                              <div className="text-right">
+                                <span className="text-sm font-black text-slate-900 dark:text-white block">{rank.score}%</span>
+                                <span className="text-[9px] text-slate-400 uppercase tracking-wide font-bold">Productivity</span>
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
                     </div>
                   </div>
                 </div>
-              ))}
-            </div>
+              );
+            })()}
           </div>
         )}
 
@@ -3216,49 +5781,92 @@ export default function App() {
           <div className="p-6 md:p-8 space-y-6 max-w-4xl mx-auto w-full">
             <div>
               <h1 className="text-2xl font-black text-slate-900 dark:text-white font-display">Student Profile</h1>
-              <p className="text-xs text-slate-400 mt-0.5">Customize your verified avatar name, study biography, and inspect unlocked badges.</p>
+              <p className="text-xs text-slate-400 mt-0.5">Verified Academic Student Identity & Custom Hyper-Realistic Avatar.</p>
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
               
-              {/* Profile card panel */}
-              <div className="md:col-span-1 bg-white/80 dark:bg-slate-900/80 backdrop-blur-md p-6 rounded-[32px] border border-violet-100/50 dark:border-slate-800/80 shadow-md flex flex-col items-center justify-center text-center space-y-4">
-                <img 
-                  src={currentUser.avatarUrl} 
-                  alt="avatar" 
-                  className="w-24 h-24 rounded-full object-cover ring-4 ring-violet-500/10" 
-                />
-                <div>
-                  <h3 className="text-sm font-black text-slate-900 dark:text-white leading-tight font-display">
-                    {currentUser.displayName}
-                  </h3>
-                  <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider block mt-1">@{currentUser.username}</span>
+              {/* Profile Card Panel - Hyper Realistic 3D Student ID Card */}
+              <div className="md:col-span-1 bg-gradient-to-br from-slate-900 via-slate-950 to-indigo-950 text-white p-6 rounded-[32px] border border-violet-500/30 shadow-xl flex flex-col items-center justify-between text-center space-y-5 relative overflow-hidden group">
+                {/* Holographic Shimmer Overlay */}
+                <div className="absolute top-0 inset-x-0 h-1 bg-gradient-to-r from-cyan-400 via-fuchsia-500 to-amber-400" />
+                <div className="absolute -right-12 -top-12 w-32 h-32 rounded-full bg-violet-600/10 blur-2xl pointer-events-none" />
+
+                {/* ID Card Top Header */}
+                <div className="w-full flex items-center justify-between border-b border-slate-800 pb-3 text-left">
+                  <div className="flex items-center gap-2">
+                    <div className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse" />
+                    <span className="text-[10px] font-black uppercase tracking-widest text-violet-300 font-display">
+                      Verified Identity
+                    </span>
+                  </div>
+                  <span className="text-[9px] font-mono text-slate-400 bg-slate-800 px-2 py-0.5 rounded-md">
+                    ID #{currentUser.email.substring(0, 6).toUpperCase()}
+                  </span>
                 </div>
-                <p className="text-xs text-slate-500 leading-relaxed font-semibold px-2">
-                  {currentUser.bio}
-                </p>
+
+                {/* SafeAvatar with Frame */}
+                <div className="relative pt-2">
+                  <SafeAvatar
+                    src={currentUser.avatarUrl}
+                    name={currentUser.displayName}
+                    frame={currentUser.frame || 'neon'}
+                    size="xl"
+                  />
+                </div>
+
+                {/* Name & Bio */}
+                <div className="space-y-1 w-full">
+                  <div className="flex items-center justify-center gap-1.5">
+                    <h3 className="text-base font-black text-white leading-tight font-display">
+                      {currentUser.displayName}
+                    </h3>
+                    <CheckCircle2 className="w-4 h-4 text-cyan-400 fill-cyan-400/20 shrink-0" />
+                  </div>
+                  <span className="text-[11px] text-violet-300 font-mono block">@{currentUser.username}</span>
+                  <p className="text-xs text-slate-300 leading-relaxed font-normal pt-1 px-1">
+                    "{currentUser.bio || 'Daily learner & reflector'}"
+                  </p>
+                </div>
+
+                {/* Status Note Badge */}
+                <div className="w-full p-2.5 bg-slate-900/90 border border-slate-800 rounded-2xl flex items-center justify-between gap-2 text-left">
+                  <div className="min-w-0">
+                    <span className="text-[9px] font-bold text-slate-400 uppercase tracking-wider block">Status</span>
+                    <p className="text-xs font-semibold text-violet-200 truncate">{userStatusNote}</p>
+                  </div>
+                  <button
+                    onClick={() => {
+                      setStatusNoteInput(userStatusNote);
+                      setShowStatusNoteModal(true);
+                    }}
+                    className="p-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-[10px] font-bold shrink-0 transition-colors"
+                  >
+                    Edit
+                  </button>
+                </div>
 
                 {/* Direct quick profile edit & settings buttons */}
-                <div className="flex flex-wrap gap-2 w-full justify-center pt-2">
+                <div className="flex flex-wrap gap-2 w-full justify-center pt-1">
                   <button
                     onClick={() => {
                       setEditDisplayName(currentUser.displayName);
                       setEditBio(currentUser.bio);
                       setEditAvatarUrl(currentUser.avatarUrl);
+                      setEditFrame(currentUser.frame || 'none');
                       setAvatarSearchQuery('');
                       setAvatarCategoryFilter('All');
                       setIsEditingProfile(true);
                     }}
-                    className="px-4 py-2.5 text-xs font-black bg-gradient-to-tr from-violet-600 to-fuchsia-600 hover:from-violet-500 hover:to-fuchsia-500 text-white rounded-2xl shadow-sm transition-all cursor-pointer flex-1 min-w-[120px]"
+                    className="px-4 py-2.5 text-xs font-black bg-gradient-to-tr from-violet-600 via-fuchsia-600 to-indigo-600 hover:opacity-90 text-white rounded-2xl shadow-lg transition-all cursor-pointer flex-1 min-w-[120px]"
                   >
-                    Edit profile
+                    Edit Profile & Avatar
                   </button>
                   <button
                     onClick={() => setCurrentTab('settings')}
-                    className="px-4 py-2.5 text-xs font-black bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 border border-slate-200/80 dark:border-slate-700 rounded-2xl shadow-sm transition-all cursor-pointer flex items-center justify-center gap-1.5"
+                    className="px-3.5 py-2.5 text-xs font-black bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-2xl shadow-sm transition-all cursor-pointer flex items-center justify-center gap-1.5"
                   >
-                    <SettingsIcon className="w-4 h-4 text-violet-500" />
-                    Settings
+                    <SettingsIcon className="w-4 h-4 text-violet-400" />
                   </button>
                 </div>
               </div>
@@ -3478,35 +6086,85 @@ export default function App() {
                 )}
               </div>
 
-              {/* Card 3: Data Export */}
+              {/* Card 3: Direct Local Device Storage Engine */}
               <div className="bg-white/80 dark:bg-slate-900/80 backdrop-blur-md p-5 rounded-2xl border border-slate-200/80 dark:border-slate-800/80 shadow-sm space-y-4">
-                <div className="flex items-center gap-2 pb-3 border-b border-slate-100 dark:border-slate-800">
-                  <FileText className="w-4 h-4 text-emerald-500" />
-                  <h3 className="text-xs font-black text-slate-800 dark:text-white font-display uppercase tracking-wider">Data Export</h3>
+                <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-slate-800">
+                  <div className="flex items-center gap-2">
+                    <HardDrive className="w-4 h-4 text-emerald-500" />
+                    <h3 className="text-xs font-black text-slate-800 dark:text-white font-display uppercase tracking-wider flex items-center gap-1.5">
+                      <span>Device Storage Engine</span>
+                      <span className="text-[10px] text-amber-500 font-bold">(Game-Style Auto-Save)</span>
+                    </h3>
+                  </div>
+                  <span className="text-[10px] font-mono font-extrabold px-2.5 py-1 rounded-full bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 flex items-center gap-1">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                    <span>ACTIVE & SAVED</span>
+                  </span>
                 </div>
 
-                <div className="flex items-center justify-between">
-                  <div className="space-y-0.5">
-                    <h4 className="text-xs font-bold text-slate-800 dark:text-white">Export Student Record</h4>
-                    <p className="text-[11px] text-slate-400">Download journal entries and study session logs as JSON</p>
+                <div className="p-3.5 bg-emerald-950/20 dark:bg-emerald-950/30 rounded-2xl border border-emerald-500/20 text-xs text-slate-300 space-y-2">
+                  <p className="text-[11px] text-emerald-700 dark:text-emerald-300 font-semibold leading-relaxed">
+                    ✨ Just like games store player data on device storage, DayScore automatically saves all your profile stats, average score ({currentUser?.stats?.averageScore || 0}%), flame streak ({currentUser?.stats?.currentStreak || 0}d), unlocked badges ({currentUser?.achievements?.length || 0}), journals, focus sessions, and tasks directly on your device. When you reopen the app, your progress is instantly loaded!
+                  </p>
+                  <div className="pt-1 flex items-center justify-between">
+                    <button
+                      type="button"
+                      onClick={handleForceSyncDeviceStorage}
+                      className="px-3.5 py-2 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-extrabold text-[11px] rounded-xl shadow-md transition-all flex items-center gap-1.5 cursor-pointer"
+                    >
+                      <Sparkles className="w-3.5 h-3.5" />
+                      <span>Sync Progress to Device Storage</span>
+                    </button>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify({ journals, studySessions }, null, 2));
-                      const downloadAnchor = document.createElement('a');
-                      downloadAnchor.setAttribute("href", dataStr);
-                      downloadAnchor.setAttribute("download", "reflect_student_record.json");
-                      document.body.appendChild(downloadAnchor);
-                      downloadAnchor.click();
-                      downloadAnchor.remove();
-                      showToast('Student record downloaded successfully.', 'success');
-                    }}
-                    className="px-3.5 py-2 bg-emerald-500/10 dark:bg-emerald-950/40 text-emerald-600 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-800 hover:bg-emerald-500/20 text-xs font-extrabold rounded-xl transition-all flex items-center gap-1.5 cursor-pointer"
-                  >
-                    <Download className="w-3.5 h-3.5" />
-                    <span>Export JSON</span>
-                  </button>
+                </div>
+
+                <div className="space-y-3">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3.5 bg-slate-50/80 dark:bg-slate-950/50 rounded-2xl border border-slate-200/60 dark:border-slate-800/80">
+                    <div className="space-y-0.5">
+                      <h4 className="text-xs font-bold text-slate-800 dark:text-white flex items-center gap-1.5">
+                        <span>Save to Device Folder</span>
+                        <span className="text-[10px] font-normal text-slate-400">(JSON File Export)</span>
+                      </h4>
+                      <p className="text-[11px] text-slate-500 dark:text-slate-400">Export a complete snapshot file of all your user progress to your device downloads or documents folder</p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleSaveToDeviceFolder}
+                      className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-xs rounded-xl shadow-md transition-all flex items-center justify-center gap-2 shrink-0 cursor-pointer"
+                    >
+                      <Download className="w-3.5 h-3.5" />
+                      <span>Save to Device File</span>
+                    </button>
+                  </div>
+
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3.5 bg-slate-50/80 dark:bg-slate-950/50 rounded-2xl border border-slate-200/60 dark:border-slate-800/80">
+                    <div className="space-y-0.5">
+                      <h4 className="text-xs font-bold text-slate-800 dark:text-white flex items-center gap-1.5">
+                        <span>Load from Device Folder</span>
+                        <span className="text-[10px] font-normal text-slate-400">(Restore Data)</span>
+                      </h4>
+                      <p className="text-[11px] text-slate-500 dark:text-slate-400">Select and restore a previously exported snapshot file from your local device folder</p>
+                    </div>
+                    <label className="px-4 py-2.5 bg-violet-600 hover:bg-violet-700 text-white font-extrabold text-xs rounded-xl shadow-md transition-all flex items-center justify-center gap-2 shrink-0 cursor-pointer">
+                      <Folder className="w-3.5 h-3.5" />
+                      <span>Choose File</span>
+                      <input
+                        type="file"
+                        accept=".json"
+                        className="hidden"
+                        onChange={(e) => {
+                          const file = e.target.files?.[0];
+                          if (file) handleLoadFromDeviceFolder(file);
+                        }}
+                      />
+                    </label>
+                  </div>
+                </div>
+
+                <div className="pt-2 flex items-center justify-between text-[11px] text-slate-400 font-medium">
+                  <span>
+                    Saved Items: <strong className="text-slate-700 dark:text-slate-200 font-mono">{journals.length}</strong> journals, <strong className="text-slate-700 dark:text-slate-200 font-mono">{studySessions.length}</strong> study logs, <strong className="text-slate-700 dark:text-slate-200 font-mono">{todos.length}</strong> tasks
+                  </span>
                 </div>
               </div>
 
@@ -3547,7 +6205,7 @@ export default function App() {
                   </div>
                   <button
                     type="button"
-                    onClick={handleDeleteAccount}
+                    onClick={() => setShowDeleteAccountModal(true)}
                     className="px-3.5 py-2 bg-rose-50 dark:bg-rose-950/40 text-rose-600 dark:text-rose-400 hover:bg-rose-100 dark:hover:bg-rose-900/50 border border-rose-200 dark:border-rose-900 text-xs font-extrabold rounded-xl transition-all flex items-center gap-1.5 cursor-pointer"
                   >
                     <Trash2 className="w-3.5 h-3.5" />
@@ -3565,65 +6223,130 @@ export default function App() {
       {/* --- REWARDING AI EVALUATION DETAILS MODAL --- */}
       <AnimatePresence>
         {showEvaluationModal && activeEvaluation && (
-          <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-md z-50 flex items-center justify-center p-4">
+          <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-md z-50 flex items-center justify-center p-4">
             <motion.div
               initial={{ scale: 0.95, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.95, opacity: 0 }}
-              className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 w-full max-w-lg p-6 rounded-3xl shadow-2xl space-y-5 max-h-[85vh] overflow-y-auto"
+              className="bg-white dark:bg-slate-900 border border-violet-200/80 dark:border-slate-800 w-full max-w-lg p-6 rounded-[32px] shadow-2xl space-y-5 max-h-[88vh] overflow-y-auto custom-scrollbar"
             >
-              {/* Header */}
-              <div className="text-center space-y-1">
-                <Sparkles className="w-8 h-8 text-indigo-500 mx-auto animate-pulse" />
-                <h3 className="text-lg font-black text-slate-900 dark:text-white">Daily AI Evaluation Insights</h3>
-                <p className="text-[10px] text-slate-400">Holistic reflection analysis powered by Google Gemini</p>
+              {/* Modal Header with Score Mark */}
+              <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-slate-800">
+                <div className="flex items-center gap-3.5">
+                  <div className="w-14 h-14 sm:w-16 sm:h-16 rounded-2xl bg-gradient-to-tr from-violet-600 via-fuchsia-600 to-indigo-600 text-white flex flex-col items-center justify-center font-black shadow-md shrink-0">
+                    <span className="text-xl sm:text-2xl font-display leading-none">
+                      {activeEvaluation.score ?? selectedEntry?.score ?? 0}
+                    </span>
+                    <span className="text-[8px] font-bold uppercase tracking-wider opacity-80 mt-0.5">/ 100</span>
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-xl">{activeEvaluation.emoji || selectedEntry?.emoji || '✨'}</span>
+                      <h3 className="text-base sm:text-lg font-black text-slate-900 dark:text-white font-display">
+                        {activeEvaluation.title || selectedEntry?.title || 'Daily AI Score Breakdown'}
+                      </h3>
+                    </div>
+                    <p className="text-[10px] font-bold text-violet-600 dark:text-violet-400">
+                      Total Reflection Analysis Details ({selectedDate})
+                    </p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => {
+                    setShowEvaluationModal(false);
+                    setActiveEvaluation(null);
+                  }}
+                  className="p-2 text-slate-400 hover:text-slate-600 dark:hover:text-white rounded-full hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              {/* Score Quality Progress Bar */}
+              <div className="space-y-1.5">
+                <div className="flex justify-between text-xs font-bold text-slate-600 dark:text-slate-300">
+                  <span>DayScore Quality</span>
+                  <span className="font-mono text-violet-600 dark:text-violet-400 font-black">
+                    {activeEvaluation.score ?? selectedEntry?.score ?? 0}%
+                  </span>
+                </div>
+                <div className="w-full h-3 bg-slate-200/80 dark:bg-slate-800 rounded-full overflow-hidden p-0.5">
+                  <div
+                    className="h-full bg-gradient-to-r from-violet-600 via-fuchsia-500 to-emerald-400 rounded-full transition-all duration-500"
+                    style={{ width: `${Math.min(100, Math.max(0, activeEvaluation.score ?? selectedEntry?.score ?? 0))}%` }}
+                  />
+                </div>
               </div>
 
               {/* Summary Block */}
-              <div className="p-4 bg-indigo-50 dark:bg-indigo-950/20 border border-indigo-100 dark:border-indigo-900 rounded-2xl text-xs text-indigo-800 dark:text-indigo-200 leading-relaxed font-semibold">
+              <div className="p-4 bg-indigo-50/80 dark:bg-indigo-950/30 border border-indigo-100 dark:border-indigo-900 rounded-2xl text-xs text-indigo-900 dark:text-indigo-200 leading-relaxed font-semibold">
                 "{activeEvaluation.summary}"
               </div>
 
               {/* Strengths & Improvements */}
               <div className="space-y-4">
-                <div className="space-y-2">
-                  <h4 className="text-xs font-bold uppercase text-emerald-500 tracking-wider">Key Highlights & Strengths</h4>
-                  <ul className="space-y-1">
-                    {activeEvaluation.strengths.map((str: string, index: number) => (
-                      <li key={index} className="flex items-start gap-2 text-xs text-slate-700 dark:text-slate-300 font-semibold">
-                        <span className="text-emerald-500">✔</span> {str}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
+                {((activeEvaluation.strengths && activeEvaluation.strengths.length > 0) || activeEvaluation.strength) && (
+                  <div className="space-y-2">
+                    <h4 className="text-xs font-bold uppercase text-emerald-600 dark:text-emerald-400 tracking-wider flex items-center gap-1">
+                      <Check className="w-4 h-4 text-emerald-500" /> Key Strengths
+                    </h4>
+                    <ul className="space-y-1.5">
+                      {activeEvaluation.strengths && activeEvaluation.strengths.length > 0 ? (
+                        activeEvaluation.strengths.map((str: string, index: number) => (
+                          <li key={index} className="flex items-start gap-2 text-xs text-slate-700 dark:text-slate-300 font-semibold">
+                            <span className="text-emerald-500 shrink-0 font-bold">✔</span> <span>{str}</span>
+                          </li>
+                        ))
+                      ) : (
+                        <li className="flex items-start gap-2 text-xs text-slate-700 dark:text-slate-300 font-semibold">
+                          <span className="text-emerald-500 shrink-0 font-bold">✔</span> <span>{activeEvaluation.strength}</span>
+                        </li>
+                      )}
+                    </ul>
+                  </div>
+                )}
 
-                <div className="space-y-2">
-                  <h4 className="text-xs font-bold uppercase text-amber-500 tracking-wider">Tailored Recommendations</h4>
-                  <ul className="space-y-1">
-                    {activeEvaluation.improvements.map((imp: string, index: number) => (
-                      <li key={index} className="flex items-start gap-2 text-xs text-slate-700 dark:text-slate-300 font-semibold">
-                        <span className="text-amber-500">▶</span> {imp}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
+                {activeEvaluation.improvements && activeEvaluation.improvements.length > 0 && (
+                  <div className="space-y-2">
+                    <h4 className="text-xs font-bold uppercase text-amber-600 dark:text-amber-400 tracking-wider">
+                      🎯 Tailored Recommendations
+                    </h4>
+                    <ul className="space-y-1.5">
+                      {activeEvaluation.improvements.map((imp: string, index: number) => (
+                        <li key={index} className="flex items-start gap-2 text-xs text-slate-700 dark:text-slate-300 font-semibold">
+                          <span className="text-amber-500 shrink-0 font-bold">▶</span> <span>{imp}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
               </div>
 
               {/* Tomorrow's challenge */}
-              <div className="p-4 bg-orange-50 dark:bg-orange-950/20 border border-orange-100 dark:border-orange-900 rounded-2xl">
-                <h4 className="text-[10px] font-black uppercase text-orange-600 dark:text-orange-400 tracking-wider leading-none mb-1">
-                  Tomorrow's Growth Challenge
-                </h4>
-                <p className="text-xs font-semibold text-orange-800 dark:text-orange-200">{activeEvaluation.tomorrowChallenge}</p>
-              </div>
+              {activeEvaluation.tomorrowChallenge && (
+                <div className="p-4 bg-gradient-to-r from-amber-500/15 via-orange-500/15 to-rose-500/15 border border-amber-300/80 dark:border-amber-700/80 rounded-2xl space-y-1">
+                  <h4 className="text-[10px] font-black uppercase text-amber-700 dark:text-amber-300 tracking-wider leading-none">
+                    🔥 Tomorrow's Growth Challenge
+                  </h4>
+                  <p className="text-xs font-bold text-slate-800 dark:text-slate-200">{activeEvaluation.tomorrowChallenge}</p>
+                </div>
+              )}
+
+              {/* Encouragement text */}
+              {activeEvaluation.encouragement && (
+                <div className="p-3 bg-violet-50 dark:bg-violet-950/40 border border-violet-200 dark:border-violet-800 rounded-2xl text-xs font-medium text-violet-800 dark:text-violet-300 text-center italic">
+                  "{activeEvaluation.encouragement}"
+                </div>
+              )}
 
               {/* Close Button */}
               <button
+                type="button"
                 onClick={() => {
                   setShowEvaluationModal(false);
                   setActiveEvaluation(null);
                 }}
-                className="w-full py-3.5 text-center text-xs font-black text-white bg-gradient-to-r from-violet-600 to-fuchsia-600 hover:from-violet-500 hover:to-fuchsia-500 active:translate-y-0.5 border-b-4 border-violet-800 active:border-b-0 rounded-2xl transition-all duration-100 cursor-pointer"
+                className="w-full py-3.5 text-center text-xs font-black text-white bg-gradient-to-r from-violet-600 to-fuchsia-600 hover:from-violet-500 hover:to-fuchsia-500 active:translate-y-0.5 border-b-4 border-violet-800 active:border-b-0 rounded-2xl transition-all duration-100 cursor-pointer shadow-md"
               >
                 Got it, keep reflecting!
               </button>
@@ -3756,6 +6479,199 @@ export default function App() {
         )}
       </AnimatePresence>
 
+      {/* --- SPECIAL INTERACTIVE 3D TROPHY INSPECTION MODAL --- */}
+      <AnimatePresence>
+        {trophyInspectModal && (
+          <div className="fixed inset-0 bg-slate-900/70 backdrop-blur-md z-50 flex items-center justify-center p-4">
+            <motion.div
+              initial={{ scale: 0.9, opacity: 0, y: 20 }}
+              animate={{ scale: 1, opacity: 1, y: 0 }}
+              exit={{ scale: 0.9, opacity: 0, y: 20 }}
+              transition={{ type: 'spring', stiffness: 300, damping: 25 }}
+              className="bg-white dark:bg-slate-900 border-2 border-amber-300 dark:border-amber-700/60 w-full max-w-md p-6 sm:p-8 rounded-[36px] shadow-2xl relative overflow-hidden space-y-6 text-center"
+            >
+              {/* Top ambient glow */}
+              <div className="absolute -top-12 left-1/2 -translate-x-1/2 w-48 h-48 bg-amber-400/20 dark:bg-amber-500/10 rounded-full blur-3xl pointer-events-none" />
+
+              <button
+                onClick={() => setTrophyInspectModal(null)}
+                className="absolute top-4 right-4 p-2 text-slate-400 hover:text-slate-600 dark:hover:text-white rounded-full bg-slate-100 dark:bg-slate-800 transition-colors cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+
+              <div className="inline-flex items-center gap-1.5 px-3 py-1 bg-amber-500/15 text-amber-700 dark:text-amber-300 rounded-full text-[10px] font-black uppercase tracking-wider">
+                <Crown className="w-3.5 h-3.5 text-amber-500" />
+                <span>3D Animated Trophy Showcase</span>
+              </div>
+
+              {/* Big 3D Trophy Animated Stage */}
+              <div className="py-4 flex justify-center">
+                <motion.div
+                  animate={{
+                    rotateY: [0, 360],
+                    y: [0, -8, 0]
+                  }}
+                  transition={{
+                    rotateY: { duration: 10, repeat: Infinity, ease: 'linear' },
+                    y: { duration: 3, repeat: Infinity, ease: 'easeInOut' }
+                  }}
+                  className={`w-28 h-28 sm:w-32 sm:h-32 rounded-[32px] bg-gradient-to-br ${trophyInspectModal.gradient} p-1 shadow-2xl flex items-center justify-center text-6xl relative group`}
+                >
+                  <div className="w-full h-full bg-slate-950 rounded-[28px] flex items-center justify-center text-6xl shadow-inner">
+                    {trophyInspectModal.icon}
+                  </div>
+                </motion.div>
+              </div>
+
+              <div>
+                <h3 className="text-xl font-black text-slate-900 dark:text-white font-display">
+                  {trophyInspectModal.title}
+                </h3>
+                <p className="text-xs text-amber-600 dark:text-amber-400 font-bold mt-1">
+                  {trophyInspectModal.subtitle}
+                </p>
+              </div>
+
+              {/* Requirement & Holder Details */}
+              <div className="p-4 rounded-2xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200/80 dark:border-slate-700/80 text-left space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Current Holder</span>
+                  <span className="text-xs font-black text-slate-900 dark:text-white flex items-center gap-1">
+                    {trophyInspectModal.holderAvatar && (
+                      <img src={trophyInspectModal.holderAvatar} alt="holder" className="w-4 h-4 rounded-full object-cover" />
+                    )}
+                    <span>{trophyInspectModal.holder}</span>
+                  </span>
+                </div>
+
+                <div className="flex items-center justify-between border-t border-slate-200/60 dark:border-slate-700/60 pt-2">
+                  <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Unlock Condition</span>
+                  <span className="text-[11px] font-extrabold text-violet-600 dark:text-violet-300">
+                    {trophyInspectModal.req}
+                  </span>
+                </div>
+
+                <div className="flex items-center justify-between border-t border-slate-200/60 dark:border-slate-700/60 pt-2">
+                  <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Status</span>
+                  <span className="text-xs font-black text-emerald-600 dark:text-emerald-400">
+                    {trophyInspectModal.status}
+                  </span>
+                </div>
+              </div>
+
+              {/* Action Buttons */}
+              <div className="space-y-2">
+                <button
+                  onClick={() => {
+                    setConfettiActive(true);
+                    setTimeout(() => setConfettiActive(false), 4000);
+                    showToast(`🎉 Celebrated ${trophyInspectModal.title}! Keep striving for excellence.`, 'success');
+                  }}
+                  className="w-full py-3.5 bg-gradient-to-r from-amber-500 via-yellow-400 to-amber-500 text-slate-950 font-black text-xs rounded-2xl shadow-lg hover:shadow-xl active:scale-95 transition-all flex items-center justify-center gap-2 cursor-pointer"
+                >
+                  <Sparkles className="w-4 h-4 text-slate-950" />
+                  <span>Celebrate Trophy Rank 🎉</span>
+                </button>
+
+                <button
+                  onClick={() => setTrophyInspectModal(null)}
+                  className="w-full py-2.5 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 font-bold text-xs rounded-xl hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors cursor-pointer"
+                >
+                  Close Showcase
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* --- DELETE ACCOUNT CONFIRMATION MODAL --- */}
+      <AnimatePresence>
+        {showDeleteAccountModal && currentUser && (
+          <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md z-50 flex items-center justify-center p-4">
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0, y: 10 }}
+              animate={{ scale: 1, opacity: 1, y: 0 }}
+              exit={{ scale: 0.95, opacity: 0, y: 10 }}
+              className="bg-white dark:bg-slate-900 border border-rose-200 dark:border-rose-900/80 w-full max-w-md p-6 rounded-3xl shadow-2xl space-y-5"
+            >
+              <div className="flex items-center justify-between border-b border-rose-100 dark:border-rose-950/60 pb-3">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-10 h-10 rounded-2xl bg-rose-500/10 dark:bg-rose-950/50 border border-rose-200 dark:border-rose-800 flex items-center justify-center text-rose-600 dark:text-rose-400">
+                    <AlertTriangle className="w-5 h-5 animate-pulse" />
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-black text-slate-900 dark:text-white font-display">Delete Account Permanently</h3>
+                    <p className="text-[10px] text-slate-400 font-medium">{currentUser.email}</p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => {
+                    setShowDeleteAccountModal(false);
+                    setDeleteConfirmInput('');
+                  }}
+                  className="p-1.5 text-slate-400 hover:text-slate-600 dark:hover:text-white rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <div className="p-4 bg-rose-50 dark:bg-rose-950/30 border border-rose-100 dark:border-rose-900/50 rounded-2xl space-y-2 text-xs text-rose-900 dark:text-rose-200 font-medium">
+                <p className="font-bold text-rose-700 dark:text-rose-300">⚠️ Warning: This action is permanent and cannot be undone!</p>
+                <ul className="list-disc list-inside space-y-1 text-[11px] text-rose-800 dark:text-rose-300/90">
+                  <li>Your user profile (@{currentUser.username}) will be erased.</li>
+                  <li>All daily reflection journals and study logs will be destroyed.</li>
+                  <li>Your earned achievements, trophies, and streak data will be lost.</li>
+                  <li>All saved passwords and recovery PINs will be deleted.</li>
+                </ul>
+              </div>
+
+              <div className="space-y-2">
+                <label className="text-[11px] font-extrabold text-slate-700 dark:text-slate-300">
+                  Type <span className="font-black text-rose-600 dark:text-rose-400 font-mono underline">DELETE</span> to confirm:
+                </label>
+                <input
+                  type="text"
+                  value={deleteConfirmInput}
+                  onChange={(e) => setDeleteConfirmInput(e.target.value)}
+                  placeholder="Type DELETE here"
+                  className="w-full px-4 py-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-xs font-mono font-bold text-slate-900 dark:text-white focus:outline-none focus:border-rose-500"
+                />
+              </div>
+
+              <div className="flex gap-3 pt-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowDeleteAccountModal(false);
+                    setDeleteConfirmInput('');
+                  }}
+                  className="flex-1 py-3 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 text-xs font-bold rounded-xl transition-all cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  disabled={deleteConfirmInput.trim().toUpperCase() !== 'DELETE' || isDeletingAccount}
+                  onClick={handleDeleteAccount}
+                  className="flex-1 py-3 bg-gradient-to-r from-rose-600 to-red-600 hover:from-rose-500 hover:to-red-500 disabled:opacity-40 disabled:cursor-not-allowed text-white text-xs font-black rounded-xl transition-all shadow-md flex items-center justify-center gap-2 cursor-pointer"
+                >
+                  {isDeletingAccount ? (
+                    <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"></span>
+                  ) : (
+                    <>
+                      <Trash2 className="w-4 h-4" />
+                      <span>Permanently Delete</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
       {/* --- FOCUS SESSION FINISH CONFIGURATION MODAL --- */}
       <AnimatePresence>
         {showTimerFinishModal && (
@@ -3852,42 +6768,92 @@ export default function App() {
               </div>
 
               <div className="space-y-4 overflow-y-auto pr-1 flex-1 custom-scrollbar">
-                {/* Current Active Avatar Preview Banner */}
-                <div className="p-3.5 rounded-2xl bg-gradient-to-r from-violet-500/10 via-fuchsia-500/10 to-rose-500/10 border border-violet-200/70 dark:border-violet-800/60 flex items-center gap-3.5">
-                  <div className="relative shrink-0">
-                    <img 
-                      src={editAvatarUrl || activeAvatarCharacter.url} 
-                      alt="Selected Avatar" 
-                      className="w-14 h-14 rounded-2xl object-cover ring-4 ring-violet-500/30 bg-slate-900 shadow-md"
-                      referrerPolicy="no-referrer"
-                    />
-                    <div className="absolute -bottom-1 -right-1 p-1 bg-violet-600 text-white rounded-full shadow-sm">
-                      <Check className="w-3 h-3 stroke-[3]" />
+                {/* Current Active Avatar Preview Banner with Frame */}
+                <div className="p-4 rounded-2xl bg-gradient-to-r from-violet-500/10 via-fuchsia-500/10 to-indigo-500/10 border border-violet-200/70 dark:border-violet-800/60 flex flex-col sm:flex-row items-center justify-between gap-4">
+                  <div className="flex items-center gap-4">
+                    <div className="relative shrink-0">
+                      <SafeAvatar
+                        src={editAvatarUrl || CHARACTER_AVATARS[0].url}
+                        name={editDisplayName || activeAvatarCharacter?.name || 'User'}
+                        frame={editFrame}
+                        size="lg"
+                      />
+                    </div>
+                    <div className="overflow-hidden space-y-0.5 text-left">
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs font-black text-slate-900 dark:text-white font-display truncate">
+                          {activeAvatarCharacter?.name || 'Custom Photo Avatar'}
+                        </span>
+                        {activeAvatarCharacter && (
+                          <span className="px-1.5 py-0.2 rounded bg-slate-200 dark:bg-slate-800 text-[10px] font-black text-violet-600 dark:text-violet-400">
+                            #{activeAvatarCharacter.id}
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-[11px] font-bold text-violet-600 dark:text-violet-300">
+                        Frame: {editFrame === 'none' ? 'Standard' : editFrame.toUpperCase()}
+                      </p>
                     </div>
                   </div>
-                  <div className="overflow-hidden space-y-0.5">
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs font-black text-slate-900 dark:text-white font-display truncate">
-                        {activeAvatarCharacter.name}
-                      </span>
-                      <span className="px-1.5 py-0.2 rounded bg-slate-200 dark:bg-slate-800 text-[10px] font-black text-violet-600 dark:text-violet-400">
-                        #{activeAvatarCharacter.id}
-                      </span>
-                    </div>
-                    <p className="text-[11px] font-bold text-violet-600 dark:text-violet-300">
-                      Category: {activeAvatarCharacter.category}
-                    </p>
+
+                  {/* Device Upload Button */}
+                  <div className="shrink-0 w-full sm:w-auto">
+                    <input
+                      type="file"
+                      ref={avatarFileInputRef}
+                      onChange={handleFileUploadAvatar}
+                      accept="image/*"
+                      className="hidden"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => avatarFileInputRef.current?.click()}
+                      className="w-full sm:w-auto px-4 py-2.5 bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 text-white font-bold text-xs rounded-xl shadow-md transition-all flex items-center justify-center gap-2 cursor-pointer"
+                    >
+                      <Upload className="w-4 h-4" />
+                      <span>Upload Photo from Device</span>
+                    </button>
                   </div>
                 </div>
 
-                {/* 70 Character Avatar Picker */}
+                {/* Profile Aura Frame Selector */}
+                <div className="space-y-1.5">
+                  <label className="text-[10px] font-black uppercase tracking-wider text-slate-400 dark:text-slate-500 font-display flex items-center gap-1.5">
+                    <Sparkles className="w-3 h-3 text-amber-500" />
+                    <span>Select Profile Frame Aura</span>
+                  </label>
+                  <div className="grid grid-cols-4 sm:grid-cols-7 gap-2">
+                    {[
+                      { id: 'none', label: 'None', color: 'bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-300' },
+                      { id: 'gold', label: 'Gold 👑', color: 'bg-amber-500/20 text-amber-600 border-amber-400' },
+                      { id: 'neon', label: 'Neon ⚡', color: 'bg-cyan-500/20 text-cyan-600 border-cyan-400' },
+                      { id: 'cosmic', label: 'Cosmic 🌌', color: 'bg-purple-500/20 text-purple-600 border-purple-400' },
+                      { id: 'emerald', label: 'Emerald 🌿', color: 'bg-emerald-500/20 text-emerald-600 border-emerald-400' },
+                      { id: 'diamond', label: 'Diamond 💎', color: 'bg-sky-500/20 text-sky-600 border-sky-400' },
+                      { id: 'flame', label: 'Flame 🔥', color: 'bg-rose-500/20 text-rose-600 border-rose-400' },
+                    ].map((f) => (
+                      <button
+                        key={f.id}
+                        type="button"
+                        onClick={() => setEditFrame(f.id as AvatarFrame)}
+                        className={`p-2 rounded-xl text-[10px] font-black border transition-all cursor-pointer ${f.color} ${
+                          editFrame === f.id ? 'ring-2 ring-violet-600 dark:ring-violet-400 scale-105' : 'opacity-80 hover:opacity-100'
+                        }`}
+                      >
+                        {f.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Character Avatar Picker */}
                 <div className="space-y-2.5">
                   <div className="flex items-center justify-between">
                     <label className="text-[10px] font-black uppercase tracking-wider text-slate-400 dark:text-slate-500 font-display">
-                      Select Character Profile Picture (70 High Quality Characters)
+                      Select Avatar Character
                     </label>
                     <span className="text-[10px] font-bold text-slate-400">
-                      Showing {filteredAvatars.length} / 70
+                      Showing {filteredAvatars.length} Avatars
                     </span>
                   </div>
 
@@ -3899,7 +6865,7 @@ export default function App() {
                         type="text"
                         value={avatarSearchQuery}
                         onChange={(e) => setAvatarSearchQuery(e.target.value)}
-                        placeholder="Search 70 characters by name or # (e.g. Zylo, Qorvin, 42)..."
+                        placeholder="Search avatar characters by name or # (e.g. Zylo, Sophia, 3D)..."
                         className="w-full pl-8 pr-8 py-2 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl text-xs font-medium text-slate-800 dark:text-white focus:outline-none focus:border-violet-500"
                       />
                       {avatarSearchQuery && (
@@ -3953,17 +6919,16 @@ export default function App() {
                             }`}
                           >
                             <div className="relative w-full aspect-square rounded-lg overflow-hidden bg-slate-900 border border-slate-200/50 dark:border-slate-800">
-                              <img
+                              <SafeAvatar
                                 src={avatar.url}
-                                alt={avatar.name}
-                                className="w-full h-full object-cover"
-                                referrerPolicy="no-referrer"
+                                name={avatar.name}
+                                size="sm"
                               />
-                              <span className="absolute top-0.5 left-0.5 text-[8px] font-black bg-slate-950/80 text-white px-1 rounded">
+                              <span className="absolute top-0.5 left-0.5 text-[8px] font-black bg-slate-950/80 text-white px-1 rounded z-10">
                                 #{avatar.id}
                               </span>
                               {isSelected && (
-                                <div className="absolute inset-0 bg-violet-600/30 backdrop-blur-[1px] flex items-center justify-center">
+                                <div className="absolute inset-0 bg-violet-600/30 backdrop-blur-[1px] flex items-center justify-center z-10">
                                   <div className="w-5 h-5 rounded-full bg-violet-600 text-white flex items-center justify-center shadow-md">
                                     <Check className="w-3 h-3 stroke-[3]" />
                                   </div>
@@ -4021,13 +6986,244 @@ export default function App() {
                 <button
                   type="button"
                   onClick={() => {
-                    handleUpdateProfile(editDisplayName, editBio, editAvatarUrl);
+                    handleUpdateProfile(editDisplayName, editBio, editAvatarUrl, editFrame);
                     setIsEditingProfile(false);
                   }}
                   className="flex-1 py-3 text-center text-xs font-black text-white bg-gradient-to-r from-violet-600 to-fuchsia-600 hover:from-violet-500 hover:to-fuchsia-500 border-b-4 border-violet-800 active:border-b-0 rounded-xl shadow-lg transition-all cursor-pointer"
                 >
                   Save Profile
                 </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+
+        {/* Status Note Modal */}
+        {showStatusNoteModal && (
+          <div className="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-sm flex items-center justify-center p-4">
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="bg-white dark:bg-slate-900 rounded-3xl p-6 max-w-sm w-full border border-slate-200 dark:border-slate-800 shadow-2xl space-y-4"
+            >
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <div className="w-8 h-8 rounded-full bg-violet-600 text-white flex items-center justify-center font-bold text-sm">
+                    💭
+                  </div>
+                  <h3 className="text-base font-black text-slate-900 dark:text-white font-display">Set Status Note</h3>
+                </div>
+                <button onClick={() => setShowStatusNoteModal(false)} className="text-slate-400 hover:text-slate-600 dark:hover:text-white">
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
+                Share a brief status note with your classmates (displayed above your avatar in chat).
+              </p>
+
+              <div className="space-y-2">
+                <input
+                  type="text"
+                  value={statusNoteInput}
+                  onChange={(e) => setStatusNoteInput(e.target.value)}
+                  placeholder="e.g. Studying Calculus 📚, 2hr Focus 🧠"
+                  maxLength={40}
+                  className="w-full px-4 py-2.5 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-xs font-semibold text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-violet-500"
+                />
+                <div className="flex justify-between text-[10px] text-slate-400 font-bold px-1">
+                  <span>Max 40 characters</span>
+                  <span>{statusNoteInput.length} / 40</span>
+                </div>
+              </div>
+
+              <div className="flex gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setShowStatusNoteModal(false)}
+                  className="flex-1 py-2.5 text-xs font-bold bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 rounded-xl hover:bg-slate-200 transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleSaveStatusNote(statusNoteInput)}
+                  className="flex-1 py-2.5 text-xs font-bold text-white bg-gradient-to-r from-violet-600 to-fuchsia-600 hover:opacity-90 rounded-xl shadow-md transition-all"
+                >
+                  Save Note
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+
+        {/* Quick Notes System Modal */}
+        {showQuickNotesModal && (
+          <div className="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-md flex items-center justify-center p-4">
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 10 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 10 }}
+              className="bg-white dark:bg-slate-900 rounded-[32px] p-6 md:p-8 max-w-2xl w-full border border-slate-200 dark:border-slate-800 shadow-2xl max-h-[90vh] flex flex-col overflow-hidden"
+            >
+              {/* Header */}
+              <div className="flex items-center justify-between pb-4 border-b border-slate-100 dark:border-slate-800 shrink-0">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-2xl bg-gradient-to-tr from-violet-600 to-fuchsia-600 flex items-center justify-center text-white shadow-md">
+                    <FileText className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h3 className="text-lg font-black text-slate-900 dark:text-white font-display">My Quick Notes & Cheat Sheets</h3>
+                    <p className="text-xs text-slate-400">Save study formulas, key reminders, and micro-notes anytime.</p>
+                  </div>
+                </div>
+                <button onClick={() => setShowQuickNotesModal(false)} className="p-2 text-slate-400 hover:text-slate-600 dark:hover:text-white rounded-full hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors">
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              {/* Note Creation Form */}
+              <div className="py-4 border-b border-slate-100 dark:border-slate-800 space-y-3 shrink-0">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                  <input
+                    type="text"
+                    value={newNoteTitle}
+                    onChange={(e) => setNewNoteTitle(e.target.value)}
+                    placeholder="Note Title (e.g. Organic Chem Lab)..."
+                    className="sm:col-span-2 px-3.5 py-2 text-xs bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl font-bold text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-violet-500"
+                  />
+                  <select
+                    value={newNoteCategory}
+                    onChange={(e) => setNewNoteCategory(e.target.value)}
+                    className="px-3 py-2 text-xs bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl font-bold text-slate-800 dark:text-white focus:outline-none"
+                  >
+                    <option value="Academic">Academic 📚</option>
+                    <option value="Focus">Focus & Habit 🧠</option>
+                    <option value="Reminder">Reminder ⏰</option>
+                    <option value="Ideas">Ideas 💡</option>
+                  </select>
+                </div>
+
+                <textarea
+                  value={newNoteContent}
+                  onChange={(e) => setNewNoteContent(e.target.value)}
+                  placeholder="Write your study note, key points, formula, or reminder here..."
+                  rows={2}
+                  className="w-full px-3.5 py-2.5 text-xs bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl font-medium text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-violet-500 resize-none"
+                />
+
+                <div className="flex items-center justify-between pt-1">
+                  {/* Color palette options */}
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mr-1">Color:</span>
+                    {[
+                      { id: 'violet', bg: 'bg-violet-500' },
+                      { id: 'emerald', bg: 'bg-emerald-500' },
+                      { id: 'amber', bg: 'bg-amber-500' },
+                      { id: 'rose', bg: 'bg-rose-500' },
+                      { id: 'indigo', bg: 'bg-indigo-500' },
+                    ].map(col => (
+                      <button
+                        key={col.id}
+                        type="button"
+                        onClick={() => setNewNoteColor(col.id)}
+                        className={`w-5 h-5 rounded-full ${col.bg} transition-transform ${newNoteColor === col.id ? 'ring-2 ring-offset-2 ring-violet-600 scale-110' : 'opacity-70 hover:opacity-100'}`}
+                      />
+                    ))}
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={handleAddQuickNote}
+                    className="px-4 py-2 bg-gradient-to-r from-violet-600 to-fuchsia-600 hover:from-violet-500 hover:to-fuchsia-500 text-white font-black text-xs rounded-xl shadow-md cursor-pointer transition-all flex items-center gap-1.5"
+                  >
+                    <Plus className="w-3.5 h-3.5" /> Save Note
+                  </button>
+                </div>
+              </div>
+
+              {/* Notes List with Filter */}
+              <div className="flex-1 overflow-y-auto py-4 space-y-3 custom-scrollbar">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                    Saved Notes ({quickNotes.length})
+                  </span>
+                  <div className="flex gap-1">
+                    {['All', 'Academic', 'Focus', 'Reminder', 'Ideas'].map(cat => (
+                      <button
+                        key={cat}
+                        type="button"
+                        onClick={() => setNoteCategoryFilter(cat)}
+                        className={`px-2 py-0.5 text-[10px] font-bold rounded-lg transition-colors ${
+                          noteCategoryFilter === cat ? 'bg-violet-600 text-white' : 'bg-slate-100 dark:bg-slate-800 text-slate-500 hover:text-slate-800 dark:hover:text-slate-200'
+                        }`}
+                      >
+                        {cat}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {quickNotes.filter(n => noteCategoryFilter === 'All' || n.category === noteCategoryFilter).length === 0 ? (
+                  <div className="text-center py-8 text-xs text-slate-400">
+                    No notes found in this category. Create one above!
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    {quickNotes
+                      .filter(n => noteCategoryFilter === 'All' || n.category === noteCategoryFilter)
+                      .sort((a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0))
+                      .map(note => (
+                        <div
+                          key={note.id}
+                          className={`p-4 rounded-2xl border transition-all relative flex flex-col justify-between ${
+                            note.color === 'emerald'
+                              ? 'bg-emerald-500/10 border-emerald-500/30'
+                              : note.color === 'amber'
+                              ? 'bg-amber-500/10 border-amber-500/30'
+                              : note.color === 'rose'
+                              ? 'bg-rose-500/10 border-rose-500/30'
+                              : note.color === 'indigo'
+                              ? 'bg-indigo-500/10 border-indigo-500/30'
+                              : 'bg-violet-500/10 border-violet-500/30'
+                          }`}
+                        >
+                          <div className="space-y-1.5">
+                            <div className="flex items-start justify-between gap-2">
+                              <h4 className="text-xs font-black text-slate-900 dark:text-white font-display leading-snug">{note.title}</h4>
+                              <div className="flex items-center gap-1 shrink-0">
+                                <button
+                                  onClick={() => handleTogglePinQuickNote(note.id)}
+                                  className={`p-1 rounded hover:bg-slate-200/50 dark:hover:bg-slate-800/50 ${note.pinned ? 'text-amber-500' : 'text-slate-400'}`}
+                                  title={note.pinned ? 'Unpin Note' : 'Pin Note'}
+                                >
+                                  📌
+                                </button>
+                                <button
+                                  onClick={() => handleDeleteQuickNote(note.id)}
+                                  className="p-1 text-slate-400 hover:text-rose-500 rounded hover:bg-slate-200/50 dark:hover:bg-slate-800/50"
+                                  title="Delete Note"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              </div>
+                            </div>
+                            <p className="text-xs text-slate-700 dark:text-slate-300 font-medium whitespace-pre-wrap leading-relaxed">
+                              {note.content}
+                            </p>
+                          </div>
+
+                          <div className="flex items-center justify-between pt-3 mt-2 border-t border-slate-200/40 dark:border-slate-800/40 text-[9px] font-bold text-slate-400">
+                            <span className="px-2 py-0.5 rounded-full bg-white/60 dark:bg-slate-900/60 border border-slate-200/40 dark:border-slate-800/40">
+                              {note.category}
+                            </span>
+                            <span>{note.date}</span>
+                          </div>
+                        </div>
+                      ))}
+                  </div>
+                )}
               </div>
             </motion.div>
           </div>
